@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::message::Message;
 
@@ -77,9 +80,20 @@ pub struct RequestBody {
     /// 如果该值为正，那么新 token 会根据其是否已在已有文本中出现受到相应的惩罚，从而增加模型谈论新主题的可能性。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence_penalty: Option<f32>,
+
+    /// 额外参数，当本结构体中没有包含特定的参数时，使用此参数传递额外的参数。
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 impl RequestBody {
+    /// 创建一个新的请求体，指定模型名称。
+    ///
+    /// # 示例
+    /// ```
+    /// use langchain_openai::request::RequestBody;
+    /// let req = RequestBody::from_model("gpt-3.5-turbo");
+    /// ```
     pub fn from_model<T: Into<String>>(model: T) -> Self {
         Self {
             model: model.into(),
@@ -87,33 +101,104 @@ impl RequestBody {
         }
     }
 
+    /// 添加消息列表，用于指定模型消息的输入。
+    ///
+    /// # 示例
+    /// ```
+    /// use langchain_openai::{request::RequestBody, message::Message};
+    /// let req = RequestBody::from_model("gpt-3.5-turbo")
+    ///     .with_messages(vec![Message::user("你好")]);
+    /// ```
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
         self.messages.extend(messages);
         self
     }
 
+    /// 添加响应格式，用于指定模型响应的格式。
+    ///
+    /// # 示例
+    /// ```
+    /// use langchain_openai::request::{RequestBody, ResponseFormat, FormatType};
+    /// let req = RequestBody::from_model("gpt-3.5-turbo")
+    ///     .with_response_format(ResponseFormat::json_object());
+    /// ```
     pub fn with_response_format(mut self, format: ResponseFormat) -> Self {
         self.response_format = Some(format);
         self
     }
+
+    /// 添加额外的参数，当本结构体中没有包含特定的参数时，使用此参数传递额外的参数。
+    ///
+    /// # 示例
+    /// ```
+    /// use langchain_openai::request::RequestBody;
+    /// let req = RequestBody::from_model("gpt-3.5-turbo")
+    ///     .with_extra_param("temperature", 0.7);
+    /// ```
+    pub fn with_extra_param<T: Into<String>, U: Into<Value>>(mut self, key: T, value: U) -> Self {
+        self.extra.insert(key.into(), value.into());
+        self
+    }
+
+    /// 添加多个额外的参数，当本结构体中没有包含特定的参数时，使用此参数一次性传递多个额外的参数。
+    ///
+    /// # 示例
+    /// ```
+    /// use langchain_openai::request::RequestBody;
+    /// let req = RequestBody::from_model("gpt-3.5-turbo")
+    ///     .with_extra_params(vec![("temperature", 0.7), ("top_p", 0.9)]);
+    /// ```
+    pub fn with_extra_params<I, K, V>(mut self, params: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<Value>,
+    {
+        for (k, v) in params {
+            self.extra.insert(k.into(), v.into());
+        }
+        self
+    }
 }
 
+/// 响应格式，用于指定模型响应的格式。
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct ResponseFormat {
     #[serde(rename = "type")]
-    pub format_type: FormatType,
+    format_type: FormatType,
 
     /// 可选的 JSON Schema 字符串，用于定义响应格式的结构，
     /// 仅在 format_type 为 `json_schema` 时使用。
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub json_schema: Option<String>,
+    json_schema: Option<String>,
 }
 
 impl ResponseFormat {
+    /// 创建一个 JSON 对象格式的响应格式。
+    ///
+    /// # 示例
+    /// ```
+    /// use langchain_openai::request::ResponseFormat;
+    /// let format = ResponseFormat::json_object();
+    /// ```
     pub fn json_object() -> Self {
         Self {
             format_type: FormatType::JsonObject,
             ..Default::default()
+        }
+    }
+
+    /// 创建一个 JSON Schema 格式的响应格式。
+    ///
+    /// # 示例
+    /// ```
+    /// use langchain_openai::request::ResponseFormat;
+    /// let format = ResponseFormat::json_schema("{}".to_string());
+    /// ```
+    pub fn json_schema(schema: String) -> Self {
+        Self {
+            format_type: FormatType::JsonSchema,
+            json_schema: Some(schema),
         }
     }
 }
