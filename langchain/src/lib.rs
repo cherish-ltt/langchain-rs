@@ -55,17 +55,16 @@ impl IntoDynTool for DynTool {
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, GraphLabel)]
 pub enum AgentLabel {
-    Observe,
-    Act,
-    Reflect,
+    CallModel,
+    ToolExecutor,
 }
 
-pub struct ObserveNode<M> {
+pub struct LlmNode<M> {
     pub model: M,
 }
 
 #[async_trait::async_trait]
-impl<M> Node<MessageState> for ObserveNode<M>
+impl<M> Node<MessageState> for LlmNode<M>
 where
     M: LlmModel + Send + Sync + 'static,
 {
@@ -74,12 +73,12 @@ where
     }
 }
 
-pub struct ActNode {
+pub struct ToolNode {
     tools: Vec<DynTool>,
 }
 
 #[async_trait::async_trait]
-impl Node<MessageState> for ActNode {
+impl Node<MessageState> for ToolNode {
     async fn run(&self, state: &MessageState) -> Result<MessageDiff, NodeRunError> {
         if let Some(last_message) = state.messages.last() {
             if let Message::Assistant { tool_calls, .. } = last_message
@@ -133,6 +132,7 @@ impl Node<MessageState> for ActNode {
     }
 }
 
+// TODO: 实现反思节点
 pub struct ReflectNode;
 
 #[async_trait::async_trait]
@@ -162,7 +162,7 @@ fn route(state: &MessageState) -> InternedGraphLabel {
         if let Message::Assistant { tool_calls, .. } = last_message
             && tool_calls.is_some()
         {
-            return AgentLabel::Act.intern();
+            return AgentLabel::ToolExecutor.intern();
         } else {
             return BaseAgentLabel::End.intern();
         };
@@ -180,20 +180,18 @@ where
 {
     let mut graph = StateGraph::<MessageState>::default();
 
-    graph.add_node(AgentLabel::Observe, ObserveNode { model });
-    graph.add_node(AgentLabel::Act, ActNode { tools });
-    graph.add_node(AgentLabel::Reflect, ReflectNode);
+    graph.add_node(AgentLabel::CallModel, LlmNode { model });
+    graph.add_node(AgentLabel::ToolExecutor, ToolNode { tools });
     graph.add_node(BaseAgentLabel::End, EndNode);
 
-    graph.try_set_start(BaseAgentLabel::Start)?;
-    graph.try_set_end(BaseAgentLabel::End)?;
+    graph.set_start(BaseAgentLabel::Start);
+    graph.set_end(BaseAgentLabel::End);
 
-    graph.try_add_node_edge(BaseAgentLabel::Start, AgentLabel::Observe)?;
-    graph.try_add_condition_edge(AgentLabel::Observe, route)?;
-    graph.try_add_node_edge(AgentLabel::Act, AgentLabel::Reflect)?;
-    graph.try_add_node_edge(AgentLabel::Reflect, AgentLabel::Observe)?;
+    graph.add_node_edge(BaseAgentLabel::Start, AgentLabel::CallModel);
+    graph.add_condition_edge(AgentLabel::CallModel, route);
+    graph.add_node_edge(AgentLabel::ToolExecutor, AgentLabel::CallModel);
 
-    AgentGraphRunner::run_graph(&graph, initial, 10).await
+    AgentGraphRunner::run(&graph, initial).await
 }
 
 pub struct ReactAgent<M> {

@@ -24,8 +24,8 @@ pub struct AgentGraphRunner;
 impl AgentGraphRunner {
     const MAX_STEPS: usize = 25;
 
-    pub async fn run<S: State>(graph: &StateGraph<S>) -> Result<S, GraphRunnerError> {
-        Self::run_graph(graph, S::default(), Self::MAX_STEPS).await
+    pub async fn run<S: State>(graph: &StateGraph<S>, initial: S) -> Result<S, GraphRunnerError> {
+        Self::run_graph(graph, initial, Self::MAX_STEPS).await
     }
 
     pub async fn run_graph<S: State>(
@@ -163,7 +163,9 @@ mod test {
         graph.add_node_edge(CAgentLabel::Act, CAgentLabel::Reflect);
         graph.add_node_edge(CAgentLabel::Reflect, CAgentLabel::Observe);
 
-        let state = AgentGraphRunner::run(&graph).await.unwrap();
+        let state = AgentGraphRunner::run(&graph, AgentTestState::default())
+            .await
+            .unwrap();
 
         assert_eq!(state.steps, 2);
         assert_eq!(
