@@ -1,4 +1,4 @@
-use langchain_openai::{message::Message, request::RequestBody};
+use langchain_openai::{CHAT_COMPLETIONS, message::Message, request::RequestBody};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
 const BASE_URL: &str = "https://api.siliconflow.cn/v1";
@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{BASE_URL}/chat/completions"))
+        .post(format!("{BASE_URL}{CHAT_COMPLETIONS}"))
         .headers(headers)
         .json(&body)
         .send()
