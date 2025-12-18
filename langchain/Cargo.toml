@@ -12,8 +12,10 @@ reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 futures = "0.3"
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 langchain_openai = { path = "../langchain_openai" }
 anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }

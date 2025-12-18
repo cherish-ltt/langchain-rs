@@ -9,6 +9,10 @@ const MODEL: &str = "deepseek-ai/DeepSeek-V3.2";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+
     let model = ChatOpenAi::new(BASE_URL, API_KEY, MODEL);
     let mut agent = ReactAgentBuilder::new(model)
         .with_tools(tools_from_fns!(get_weather, add, sub))
@@ -27,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
         .messages
         .last()
         .ok_or(anyhow::anyhow!("No message found"))?;
-    println!("运行结束{:?}", message);
+    tracing::info!("运行结束{:?}", message);
 
     Ok(())
 }
@@ -47,6 +51,6 @@ async fn add(a: f64, b: f64) -> Result<f64, NodeRunError> {
 
 #[tool(description = "计算两个数的差", args(a = "第一个数", b = "第二个数"))]
 async fn sub(state: &MessageState, a: f64, b: f64) -> Result<f64, NodeRunError> {
-    println!("调用了几次LLM: {:?}", state.llm_calls);
+    tracing::info!("调用了几次LLM: {:?}", state.llm_calls);
     Ok(a - b)
 }

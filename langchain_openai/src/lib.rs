@@ -47,7 +47,7 @@ impl LlmModel for ChatOpenAi {
         let body = RequestBody::from_model(&self.model)
             .with_messages(state.messages.clone())
             .with_tools(self.tools.clone());
-        println!(
+        tracing::debug!(
             "请求Body:\n{}",
             serde_json::to_string_pretty(&body)
                 .map_err(|_| NodeRunError::LlmRunError("invalid request body".to_string()))?
@@ -64,7 +64,7 @@ impl LlmModel for ChatOpenAi {
             .json::<ResponseBody>()
             .await
             .map_err(|e| NodeRunError::LlmRunError(format!("request failed: {:?}", e)))?;
-        println!("回复Body:\n{:?}", response);
+        tracing::debug!("回复Body:\n{:?}", response);
 
         let message = response
             .choices

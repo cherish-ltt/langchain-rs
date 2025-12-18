@@ -11,6 +11,8 @@ tokio = "1.48.0"
 anyhow = "1.0.100"
 thiserror = "2.0.17"
 async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.dev]
 opt-level = 1

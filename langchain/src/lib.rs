@@ -88,7 +88,7 @@ impl Node<MessageState> for ToolNode {
 
                 let mut futures = Vec::new();
 
-                println!("工具调用个数: {}", tool_calls.len());
+                tracing::info!("工具调用个数: {}", tool_calls.len());
 
                 for call in tool_calls {
                     let tool_name = call.function_name().to_string();

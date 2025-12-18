@@ -11,5 +11,6 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
 langchain = { path = "../langchain" }
 langchain_core = { path = "../langchain_core" }
