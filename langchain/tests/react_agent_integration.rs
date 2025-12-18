@@ -13,7 +13,11 @@ struct FakeModel {
 
 #[async_trait::async_trait]
 impl LlmModel for FakeModel {
-    async fn invoke(&self, state: &MessageState) -> Result<MessageDiff, NodeRunError> {
+    async fn invoke(
+        &self,
+        state: &MessageState,
+        _tools: &[ToolSpec],
+    ) -> Result<MessageDiff, NodeRunError> {
         let last = state.messages.last().cloned().unwrap();
         match last {
             Message::User { .. } => {
@@ -48,9 +52,6 @@ impl LlmModel for FakeModel {
         }
     }
 
-    fn bind_tools(&mut self, tools: &[ToolSpec]) {
-        self.tools = tools.to_vec();
-    }
 }
 
 #[tool(description = "计算两个数的和", args(a = "第一个数", b = "第二个数"))]

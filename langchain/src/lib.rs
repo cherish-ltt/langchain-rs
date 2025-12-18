@@ -16,9 +16,11 @@ pub use langgraph::node::NodeRunError;
 
 #[async_trait::async_trait]
 pub trait LlmModel: Clone + Send + Sync {
-    async fn invoke(&self, state: &MessageState) -> Result<MessageDiff, NodeRunError>;
-
-    fn bind_tools(&mut self, tools: &[ToolSpec]);
+    async fn invoke(
+        &self,
+        state: &MessageState,
+        tools: &[ToolSpec],
+    ) -> Result<MessageDiff, NodeRunError>;
 }
 
 #[async_trait::async_trait]
@@ -61,6 +63,7 @@ pub enum AgentLabel {
 
 pub struct LlmNode<M> {
     pub model: M,
+    pub tool_specs: Vec<ToolSpec>,
 }
 
 #[async_trait::async_trait]
@@ -69,7 +72,7 @@ where
     M: LlmModel + Send + Sync + 'static,
 {
     async fn run(&self, state: &MessageState) -> Result<MessageDiff, NodeRunError> {
-        self.model.invoke(state).await
+        self.model.invoke(state, &self.tool_specs).await
     }
 }
 
@@ -178,9 +181,11 @@ async fn run_message_agent<M>(
 where
     M: LlmModel + Clone + Send + Sync + 'static,
 {
+    let tool_specs: Vec<ToolSpec> = tools.iter().map(|t| t.spec()).collect();
+
     let mut graph = StateGraph::<MessageState>::default();
 
-    graph.add_node(AgentLabel::CallModel, LlmNode { model });
+    graph.add_node(AgentLabel::CallModel, LlmNode { model, tool_specs });
     graph.add_node(AgentLabel::ToolExecutor, ToolNode { tools });
     graph.add_node(BaseAgentLabel::End, EndNode);
 
@@ -247,10 +252,13 @@ where
         self
     }
 
-    pub async fn invoke(&mut self, message: Message) -> Result<MessageState, GraphRunnerError> {
-        let initial = MessageState::new(vec![message]);
-        let specs: Vec<ToolSpec> = self.tools.iter().map(|t| t.spec()).collect();
-        self.model.bind_tools(&specs);
+    pub async fn invoke(&self, message: Message) -> Result<MessageState, GraphRunnerError> {
+        let mut messages = Vec::new();
+        if let Some(system_prompt) = &self.system_prompt {
+            messages.push(Message::system(system_prompt.clone()));
+        }
+        messages.push(message);
+        let initial = MessageState::new(messages);
         run_message_agent(initial, self.model.clone(), self.tools.clone()).await
     }
 }

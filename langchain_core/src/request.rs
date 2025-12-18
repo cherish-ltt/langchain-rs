@@ -91,7 +91,7 @@ impl RequestBody {
     ///
     /// # 示例
     /// ```
-    /// use langchain_openai::request::RequestBody;
+    /// use langchain_core::request::RequestBody;
     /// let req = RequestBody::from_model("gpt-3.5-turbo");
     /// ```
     pub fn from_model<T: Into<String>>(model: T) -> Self {
@@ -105,7 +105,7 @@ impl RequestBody {
     ///
     /// # 示例
     /// ```
-    /// use langchain_openai::{request::RequestBody, message::Message};
+    /// use langchain_core::{request::RequestBody, message::Message};
     /// let req = RequestBody::from_model("gpt-3.5-turbo")
     ///     .with_messages(vec![Message::user("你好")]);
     /// ```
@@ -126,7 +126,7 @@ impl RequestBody {
     ///
     /// # 示例
     /// ```
-    /// use langchain_openai::request::{RequestBody, ResponseFormat, FormatType};
+    /// use langchain_core::request::{RequestBody, ResponseFormat, FormatType};
     /// let req = RequestBody::from_model("gpt-3.5-turbo")
     ///     .with_response_format(ResponseFormat::json_object());
     ///
@@ -152,7 +152,7 @@ impl RequestBody {
     /// **不要用此方法设置已存在的字段，否则会导致序列化时字段重复，行为未定义。**
     /// # 示例
     /// ```
-    /// use langchain_openai::request::RequestBody;
+    /// use langchain_core::request::RequestBody;
     /// use serde_json::Value;
     ///
     /// let req = RequestBody::from_model("gpt-4o")
@@ -173,7 +173,7 @@ impl RequestBody {
     ///
     /// # 示例
     /// ```
-    /// use langchain_openai::request::RequestBody;
+    /// use langchain_core::request::RequestBody;
     /// use serde_json::Value;
     ///
     /// let req = RequestBody::from_model("gpt-3.5-turbo")
@@ -216,7 +216,7 @@ impl ResponseFormat {
     ///
     /// # 示例
     /// ```
-    /// use langchain_openai::request::ResponseFormat;
+    /// use langchain_core::request::ResponseFormat;
     /// let format = ResponseFormat::json_object();
     /// ```
     pub fn json_object() -> Self {
@@ -230,7 +230,7 @@ impl ResponseFormat {
     ///
     /// # 示例
     /// ```
-    /// use langchain_openai::request::ResponseFormat;
+    /// use langchain_core::request::ResponseFormat;
     /// let format = ResponseFormat::json_schema("{}".to_string());
     /// ```
     pub fn json_schema(schema: String) -> Self {

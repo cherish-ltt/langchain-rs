@@ -7,9 +7,6 @@ use langchain_core::{
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
 pub mod error;
-pub mod message;
-pub mod request;
-pub mod response;
 
 pub use error::OpenAiError;
 
@@ -20,8 +17,6 @@ pub struct ChatOpenAi {
     base_url: String,
     api_key: String,
     model: String,
-    tools: Vec<ToolSpec>,
-
     client: reqwest::Client,
 }
 
@@ -31,7 +26,6 @@ impl ChatOpenAi {
             base_url: base_url.into(),
             api_key: api_key.into(),
             model: model.into(),
-            tools: vec![],
             client: reqwest::Client::new(),
         }
     }
@@ -39,7 +33,11 @@ impl ChatOpenAi {
 
 #[async_trait::async_trait]
 impl LlmModel for ChatOpenAi {
-    async fn invoke(&self, state: &MessageState) -> Result<MessageDiff, NodeRunError> {
+    async fn invoke(
+        &self,
+        state: &MessageState,
+        tools: &[ToolSpec],
+    ) -> Result<MessageDiff, NodeRunError> {
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
@@ -50,13 +48,8 @@ impl LlmModel for ChatOpenAi {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         let body = RequestBody::from_model(&self.model)
             .with_messages(state.messages.clone())
-            .with_tools(self.tools.clone());
-        tracing::debug!(
-            "请求Body:\n{}",
-            serde_json::to_string_pretty(&body)
-                .map_err(OpenAiError::Serialization)
-                .map_err(|e| NodeRunError::LlmRunError(Box::new(e)))?
-        );
+            .with_tools(tools.to_vec());
+        tracing::debug!("请求Body:\n{:?}", &body);
 
         let response = self
             .client
@@ -84,10 +77,6 @@ impl LlmModel for ChatOpenAi {
             llm_calls_delta: 1,
         })
     }
-
-    fn bind_tools(&mut self, tools: &[ToolSpec]) {
-        self.tools = tools.to_vec();
-    }
 }
 
 pub struct ChatOpenAiBuilder {
@@ -110,7 +99,6 @@ impl ChatOpenAiBuilder {
             base_url: self.base_url,
             api_key: self.api_key,
             model: self.model,
-            tools: vec![],
             client: reqwest::Client::new(),
         }
     }
