@@ -8,10 +8,11 @@ langgraph = { path = "../langgraph" }
 langchain_core = { path = "../langchain_core" }
 langchain_macros = { path = "./macros" }
 async-trait = { workspace = true }
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "stream"] }
 serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 futures = "0.3"
+async-stream = "0.3"
 tracing = { workspace = true }
 
 [dev-dependencies]

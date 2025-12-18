@@ -1,5 +1,10 @@
-use langchain::{ReactAgentBuilder, Tool, tool, tools_from_fns};
-use langchain_core::{message::Message, state::MessageState};
+use std::sync::Arc;
+
+use futures::{StreamExt, pin_mut};
+use langchain::{
+    AgentMiddleware, DynAgentMiddleware, ReactAgentBuilder, Tool, tool, tools_from_fns,
+};
+use langchain_core::{message::Message, request::ToolSpec, state::MessageState};
 use langchain_openai::ChatOpenAi;
 use langgraph::node::NodeRunError;
 
@@ -14,11 +19,12 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let model = ChatOpenAi::new(BASE_URL, API_KEY, MODEL);
-    let mut agent = ReactAgentBuilder::new(model)
+    let agent = ReactAgentBuilder::new(model)
         .with_tools(tools_from_fns!(get_weather, add, sub))
         .with_system_prompt(
             "你是一个智能助手，你可以调用工具来完成任务,如果有多个任务它们毫无依赖关系,你可以并行调用多个工具"
         )
+        .with_middleware(logging_middleware())
         .build();
 
     let result = agent
@@ -51,6 +57,34 @@ async fn add(a: f64, b: f64) -> Result<f64, NodeRunError> {
 
 #[tool(description = "计算两个数的差", args(a = "第一个数", b = "第二个数"))]
 async fn sub(state: &MessageState, a: f64, b: f64) -> Result<f64, NodeRunError> {
-    tracing::info!("调用了几次LLM: {:?}", state.llm_calls);
+    tracing::info!("当前消息长度: {:?}", state.messages.len());
     Ok(a - b)
+}
+
+struct LoggingMiddleware;
+
+impl AgentMiddleware for LoggingMiddleware {
+    fn before_run(&self, state: &MessageState) {
+        println!("before_run, messages: {}", state.messages.len());
+    }
+
+    fn after_run(&self, state: &MessageState) {
+        println!("after_run, messages: {}", state.messages.len());
+    }
+
+    fn before_model(&self, _state: &MessageState, tools: &[ToolSpec]) {
+        println!("before_model, tools: {}", tools.len());
+    }
+
+    fn before_tool(&self, _state: &MessageState, tool_name: &str) {
+        println!("before_tool: {tool_name}");
+    }
+
+    fn after_tool(&self, _state: &MessageState, tool_name: &str) {
+        println!("after_tool: {tool_name}");
+    }
+}
+
+fn logging_middleware() -> DynAgentMiddleware {
+    Arc::new(LoggingMiddleware)
 }

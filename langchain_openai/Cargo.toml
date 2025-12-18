@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "stream"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -14,3 +14,5 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 langchain = { path = "../langchain" }
 langchain_core = { path = "../langchain_core" }
+futures = "0.3"
+async-stream = "0.3"

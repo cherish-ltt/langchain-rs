@@ -1,3 +1,4 @@
+use futures::stream::unfold;
 use langchain_core::state::State;
 use thiserror::Error;
 
@@ -19,55 +20,120 @@ pub enum GraphRunnerError {
     InvalidGraph(#[from] GraphError),
 }
 
+pub const DEFAULT_MAX_STEPS: usize = 25;
+
 pub struct AgentGraphRunner;
 
-impl AgentGraphRunner {
-    const MAX_STEPS: usize = 25;
+#[derive(Debug)]
+pub enum StepEvent {
+    NodeEnd { label: InternedGraphLabel },
+    Finished { label: InternedGraphLabel },
+}
 
+pub struct GraphStepper<'a, S: State> {
+    graph: &'a StateGraph<S>,
+    state: S,
+    current: InternedGraphLabel,
+    end: InternedGraphLabel,
+    steps: usize,
+    max_steps: usize,
+}
+
+impl<'a, S: State> GraphStepper<'a, S> {
+    pub fn new(graph: &'a StateGraph<S>, initial: S, max_steps: usize) -> Self {
+        Self {
+            graph,
+            state: initial,
+            current: graph.get_start(),
+            end: graph.get_end(),
+            steps: 0,
+            max_steps,
+        }
+    }
+
+    pub fn state(&self) -> &S {
+        &self.state
+    }
+
+    pub async fn step(&mut self) -> Result<StepEvent, GraphRunnerError> {
+        if self.steps >= self.max_steps {
+            return Err(GraphRunnerError::MaxStepsExceeded(self.max_steps));
+        }
+
+        let Some(edges) = self.graph.get_node_edges(self.current) else {
+            return Ok(StepEvent::Finished {
+                label: self.current,
+            });
+        };
+
+        let next = match edges {
+            EdgesA::NodeEdge(edge) => edge.get_output_node(),
+            EdgesA::ConditionEdge(route) => route(&self.state),
+        };
+
+        let node_state = self
+            .graph
+            .get_node(next)
+            .ok_or(GraphRunnerError::NodeNotFound(next))?;
+        let diff = node_state.node.run(&self.state).await?;
+
+        self.state.apply_diff(diff);
+        self.current = next;
+
+        if self.current == self.end {
+            return Ok(StepEvent::Finished {
+                label: self.current,
+            });
+        }
+
+        self.steps += 1;
+        Ok(StepEvent::NodeEnd { label: next })
+    }
+}
+
+impl AgentGraphRunner {
     pub async fn run<S: State>(graph: &StateGraph<S>, initial: S) -> Result<S, GraphRunnerError> {
-        Self::run_graph(graph, initial, Self::MAX_STEPS).await
+        Self::run_graph(graph, initial, DEFAULT_MAX_STEPS).await
     }
 
     pub async fn run_graph<S: State>(
         graph: &StateGraph<S>,
-        mut state: S,
+        state: S,
         max_steps: usize,
     ) -> Result<S, GraphRunnerError> {
-        let end = graph.get_end();
-        let mut current_node = graph.get_start();
-        let mut steps = 0;
-
+        let mut stepper = GraphStepper::new(graph, state, max_steps);
         loop {
-            if steps >= max_steps {
-                return Err(GraphRunnerError::MaxStepsExceeded(max_steps));
+            match stepper.step().await {
+                Ok(StepEvent::Finished { .. }) => break,
+                Ok(StepEvent::NodeEnd { .. }) => {}
+                Err(err) => return Err(err),
             }
-
-            let Some(edges) = graph.get_node_edges(current_node) else {
-                break;
-            };
-
-            let next_node = match edges {
-                EdgesA::NodeEdge(edge) => edge.get_output_node(),
-                EdgesA::ConditionEdge(route) => route(&state),
-            };
-
-            let node_state = graph
-                .get_node(next_node)
-                .ok_or(GraphRunnerError::NodeNotFound(next_node))?;
-            let diff = node_state.node.run(&state).await?;
-
-            state.apply_diff(diff);
-
-            current_node = next_node;
-
-            if current_node == end {
-                break;
-            }
-            steps += 1;
         }
-
-        Ok(state)
+        Ok(stepper.state().clone())
     }
+}
+
+/// 节点事件流，用于调试、可视化、交互式控制、HITL（Human-In-The-Loop）
+pub fn stream_graph<'a, S: State>(
+    graph: &'a StateGraph<S>,
+    initial: S,
+    max_steps: usize,
+) -> impl futures::Stream<Item = Result<StepEvent, GraphRunnerError>> + 'a {
+    let stepper = GraphStepper::new(graph, initial, max_steps);
+    unfold(Some(stepper), |state| async {
+        let mut stepper = match state {
+            Some(stepper) => stepper,
+            None => return None,
+        };
+        match stepper.step().await {
+            Ok(event) => {
+                let done = matches!(event, StepEvent::Finished { .. });
+                let next_state = if done { None } else { Some(stepper) };
+                Some((Ok(event), next_state))
+            }
+            Err(err) => Some((Err(err), None)),
+        }
+    })
 }
 
 #[cfg(test)]

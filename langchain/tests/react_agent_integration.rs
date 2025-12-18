@@ -51,7 +51,6 @@ impl LlmModel for FakeModel {
             }),
         }
     }
-
 }
 
 #[tool(description = "计算两个数的和", args(a = "第一个数", b = "第二个数"))]
@@ -63,7 +62,7 @@ async fn add(a: f64, b: f64) -> Result<f64, NodeRunError> {
 async fn react_agent_executes_tool_and_updates_state() {
     let model = FakeModel::default();
     let tools = tools_from_fns!(add);
-    let mut agent = ReactAgent::create_agent_with_tools(model, tools);
+    let agent = ReactAgent::create_agent_with_tools(model, tools);
 
     let state = agent
         .invoke(Message::user("calculate 1+2"))

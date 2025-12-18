@@ -20,6 +20,7 @@ impl MessageState {
     }
 }
 
+#[derive(Clone)]
 pub struct MessageDiff {
     pub new_messages: Vec<Message>,
     pub llm_calls_delta: usize,
