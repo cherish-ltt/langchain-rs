@@ -6,9 +6,12 @@ use langchain_core::{
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
+pub mod error;
 pub mod message;
 pub mod request;
 pub mod response;
+
+pub use error::OpenAiError;
 
 pub const CHAT_COMPLETIONS: &str = "/chat/completions";
 
@@ -41,7 +44,8 @@ impl LlmModel for ChatOpenAi {
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {}", self.api_key))
-                .map_err(|_| NodeRunError::LlmRunError("invalid api key".to_string()))?,
+                .map_err(OpenAiError::InvalidHeader)
+                .map_err(|e| NodeRunError::LlmRunError(Box::new(e)))?,
         );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         let body = RequestBody::from_model(&self.model)
@@ -50,7 +54,8 @@ impl LlmModel for ChatOpenAi {
         tracing::debug!(
             "请求Body:\n{}",
             serde_json::to_string_pretty(&body)
-                .map_err(|_| NodeRunError::LlmRunError("invalid request body".to_string()))?
+                .map_err(OpenAiError::Serialization)
+                .map_err(|e| NodeRunError::LlmRunError(Box::new(e)))?
         );
 
         let response = self
@@ -60,10 +65,12 @@ impl LlmModel for ChatOpenAi {
             .json(&body)
             .send()
             .await
-            .map_err(|_| NodeRunError::LlmRunError("request failed".to_string()))?
+            .map_err(OpenAiError::Request)
+            .map_err(|e| NodeRunError::LlmRunError(Box::new(e)))?
             .json::<ResponseBody>()
             .await
-            .map_err(|e| NodeRunError::LlmRunError(format!("request failed: {:?}", e)))?;
+            .map_err(OpenAiError::Request)
+            .map_err(|e| NodeRunError::LlmRunError(Box::new(e)))?;
         tracing::debug!("回复Body:\n{:?}", response);
 
         let message = response

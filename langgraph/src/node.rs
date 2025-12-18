@@ -39,14 +39,14 @@ macro_rules! impl_graph_label_tuples {
 // 为长度 1~32 的 GraphLabel 元组生成 IntoGraphNodeArray<N> 实现
 all_tuples_with_size!(impl_graph_label_tuples, 1, 32, T, l);
 
-#[derive(Error, Debug, Eq, PartialEq)]
+#[derive(Error, Debug)]
 pub enum NodeRunError {
     #[error("node run error")]
     NodeRunError,
     #[error("tool run error: {0}")]
     ToolRunError(String),
     #[error("llm run error: {0}")]
-    LlmRunError(String),
+    LlmRunError(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 #[async_trait]
