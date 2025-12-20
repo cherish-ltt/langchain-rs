@@ -118,6 +118,53 @@ impl<I, O, E, B: BranchKind> Graph<I, O, E, B> {
     }
 }
 
+#[derive(Debug)]
+pub enum GraphStepError<E> {
+    Graph(GraphError),
+    Node(E),
+}
+
+impl<I, O, E, B: BranchKind> Graph<I, O, E, B> {
+    pub async fn run_once(
+        &self,
+        current: InternedGraphLabel,
+        input: &I,
+    ) -> Result<(O, Vec<InternedGraphLabel>), GraphStepError<E>>
+    where
+        I: Send + Sync + 'static,
+        O: Send + Sync + 'static,
+        E: Send + Sync + 'static,
+    {
+        let state = self
+            .nodes
+            .get(&current)
+            .ok_or_else(|| GraphStepError::Graph(GraphError::InvalidNode(current)))?;
+
+        let output = state.node.run(input).await.map_err(GraphStepError::Node)?;
+
+        let mut next_nodes = Vec::new();
+
+        for edge in &state.edges {
+            match edge {
+                Edge::NodeEdge(label) => next_nodes.push(*label),
+                Edge::ConditionalEdge {
+                    next_nodes: branches,
+                    condition,
+                } => {
+                    let branches_to_take = (condition)(&output);
+                    for branch in branches_to_take {
+                        if let Some(label) = branches.get(&branch) {
+                            next_nodes.push(*label);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok((output, next_nodes))
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum GraphError {
     /// 无效的节点标签
@@ -155,6 +202,7 @@ mod tests {
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     enum TestBranch {
         Default,
+        Alt,
     }
 
     #[test]
@@ -178,5 +226,84 @@ mod tests {
             Edge::NodeEdge(next) => assert_eq!(next, b_label),
             _ => panic!("expected NodeEdge"),
         }
+    }
+
+    #[test]
+    fn duplicate_edge_returns_error() {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+            nodes: HashMap::new(),
+        };
+
+        graph.add_node(TestLabel::A, IncNode);
+        graph.add_node(TestLabel::B, IncNode);
+
+        let first = graph.try_add_node_edge(TestLabel::A, TestLabel::B);
+        assert!(first.is_ok());
+
+        let second = graph.try_add_node_edge(TestLabel::A, TestLabel::B);
+        let b_label = TestLabel::B.intern();
+        assert_eq!(second, Err(GraphError::EdgeAlreadyExists(b_label)));
+    }
+
+    #[test]
+    fn add_condition_edge_stores_branches_and_condition() {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+            nodes: HashMap::new(),
+        };
+
+        graph.add_node(TestLabel::A, IncNode);
+        graph.add_node(TestLabel::B, IncNode);
+
+        let mut branches = HashMap::new();
+        branches.insert(TestBranch::Default, TestLabel::B.intern());
+
+        graph
+            .try_add_node_condition_edge(TestLabel::A, branches.clone(), |output: &i32| {
+                if *output > 0 {
+                    vec![TestBranch::Default]
+                } else {
+                    Vec::new()
+                }
+            })
+            .unwrap();
+
+        let a_label = TestLabel::A.intern();
+        let node_state = graph.nodes.get(&a_label).unwrap();
+        assert_eq!(node_state.edges.len(), 1);
+
+        match &node_state.edges[0] {
+            Edge::ConditionalEdge {
+                next_nodes,
+                condition,
+            } => {
+                assert_eq!(next_nodes.len(), branches.len());
+                assert_eq!(
+                    next_nodes.get(&TestBranch::Default),
+                    branches.get(&TestBranch::Default)
+                );
+
+                let result = (condition)(&1);
+                assert_eq!(result, vec![TestBranch::Default]);
+            }
+            _ => panic!("expected ConditionalEdge"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_once_executes_and_collects_successors() {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+            nodes: HashMap::new(),
+        };
+
+        graph.add_node(TestLabel::A, IncNode);
+        graph.add_node(TestLabel::B, IncNode);
+
+        graph.add_node_edge(TestLabel::A, TestLabel::B);
+
+        let a_label = TestLabel::A.intern();
+        let (output, next) = graph.run_once(a_label, &0).await.unwrap();
+
+        assert_eq!(output, 1);
+        assert_eq!(next, vec![TestLabel::B.intern()]);
     }
 }

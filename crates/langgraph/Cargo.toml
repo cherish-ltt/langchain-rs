@@ -9,3 +9,6 @@ async-trait = { workspace = true }
 downcast-rs = { workspace = true }
 
 langgraph_macro = { path = "./macro" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
