@@ -1,5 +1,5 @@
 [package]
-name = "graph_marcos"
+name = "langgraph_macro"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,4 +10,3 @@ proc-macro = true
 syn = { version = "2.0", features = ["full"] }
 proc-macro2 = "1.0"
 quote = "1.0"
-bevy_macro_utils = "0.17"

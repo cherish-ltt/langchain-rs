@@ -3,10 +3,18 @@
         "deepseek",
         "Deque",
         "HITL",
+        "Internable",
+        "Interner",
         "langgraph",
         "logprobs",
         "reqwest",
         "serde",
         "thiserror"
-    ]
+    ],
+    "cSpell.enabled": true,
+    "cSpell.files": [
+        "crates/**/*",
+        "examples/**/*",
+        "docs/**/*.md"
+    ],
 }

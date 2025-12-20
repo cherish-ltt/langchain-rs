@@ -1,11 +1,5 @@
 [workspace]
-members = [
-    "langchain_openai",
-    "langchain_core",
-    "langgraph",
-    "langchain",
-    "crates/*",
-]
+members = ["crates/*"]
 resolver = "2"
 
 
@@ -19,6 +13,7 @@ thiserror = "2.0.17"
 async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+downcast-rs = "2.0.1"
 
 [profile.dev]
 opt-level = 1
