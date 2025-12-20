@@ -124,47 +124,6 @@ pub enum GraphStepError<E> {
     Node(E),
 }
 
-impl<I, O, E, B: BranchKind> Graph<I, O, E, B> {
-    pub async fn run_once(
-        &self,
-        current: InternedGraphLabel,
-        input: &I,
-    ) -> Result<(O, Vec<InternedGraphLabel>), GraphStepError<E>>
-    where
-        I: Send + Sync + 'static,
-        O: Send + Sync + 'static,
-        E: Send + Sync + 'static,
-    {
-        let state = self
-            .nodes
-            .get(&current)
-            .ok_or_else(|| GraphStepError::Graph(GraphError::InvalidNode(current)))?;
-
-        let output = state.node.run(input).await.map_err(GraphStepError::Node)?;
-
-        let mut next_nodes = Vec::new();
-
-        for edge in &state.edges {
-            match edge {
-                Edge::NodeEdge(label) => next_nodes.push(*label),
-                Edge::ConditionalEdge {
-                    next_nodes: branches,
-                    condition,
-                } => {
-                    let branches_to_take = (condition)(&output);
-                    for branch in branches_to_take {
-                        if let Some(label) = branches.get(&branch) {
-                            next_nodes.push(*label);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok((output, next_nodes))
-    }
-}
-
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum GraphError {
     /// 无效的节点标签
