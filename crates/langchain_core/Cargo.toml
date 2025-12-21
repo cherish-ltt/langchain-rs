@@ -9,3 +9,4 @@ serde_json = { workspace = true }
 async-trait = { workspace = true }
 futures-core = "0.3"
 schemars = { workspace = true }
+langchain_core_macro = { path = "./macro" }

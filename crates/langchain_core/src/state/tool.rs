@@ -1,76 +1,12 @@
-use async_trait::async_trait;
-use futures_core::Stream;
 use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{future::Future, pin::Pin, sync::Arc};
 
-use crate::{
-    message::{Message, ToolCall},
-    request::{ToolFunction, ToolSpec},
-};
+use crate::request::{ToolFunction, ToolSpec};
 
-#[derive(Debug, Clone, Default)]
-pub struct MessagesState {
-    pub messages: Vec<Message>,
-    pub llm_calls: u32,
-}
-
-impl MessagesState {
-    pub fn new(messages: Vec<Message>) -> Self {
-        Self {
-            messages,
-            llm_calls: 0,
-        }
-    }
-
-    pub fn push_message(&mut self, message: Message) {
-        self.messages.push(message);
-    }
-
-    pub fn increment_llm_calls(&mut self) {
-        self.llm_calls = self.llm_calls.saturating_add(1);
-    }
-
-    pub fn last_message(&self) -> Option<&Message> {
-        self.messages.last()
-    }
-
-    pub fn last_assistant(&self) -> Option<&Message> {
-        self.messages
-            .iter()
-            .rev()
-            .find(|m| matches!(m, Message::Assistant { .. }))
-    }
-
-    pub fn last_tool_calls(&self) -> Option<&[ToolCall]> {
-        match self.last_assistant() {
-            Some(Message::Assistant {
-                tool_calls: Some(calls),
-                ..
-            }) => Some(calls.as_slice()),
-            _ => None,
-        }
-    }
-}
-
-pub type ChatStream<E> = Pin<Box<dyn Stream<Item = Result<Message, E>> + Send>>;
-
-#[async_trait]
-pub trait ChatModel: Send + Sync {
-    type Error: Send + Sync + 'static;
-
-    async fn invoke(&self, messages: &[Message]) -> Result<Message, Self::Error>;
-
-    async fn stream(&self, messages: &[Message]) -> Result<ChatStream<Self::Error>, Self::Error>;
-}
-
-/// 工具函数统一使用的异步返回类型。
-/// 将任意 `Future<Output = Result<Value, E>>` 封装为可在运行时保存和调度的 trait object。
 pub type ToolFuture<E> = Pin<Box<dyn Future<Output = Result<Value, E>> + Send>>;
 
-/// 工具函数的标准签名：接收 JSON 参数并返回异步结果。
-/// 适用于通过 LLM 调用的任意工具，实现方通常使用 `async fn` 或 `async move` 闭包适配到该类型。
 pub type ToolFn<E> = dyn Fn(Value) -> ToolFuture<E> + Send + Sync;
 
 pub struct RegisteredTool<E> {
@@ -102,7 +38,6 @@ impl<E> RegisteredTool<E> {
 
 #[macro_export]
 macro_rules! tool {
-    // 无参数描述版本
     ($name:expr, $description:expr, |$($arg:ident : $ty:ty),*| $body:expr) => {{
 
         #[derive(::serde::Deserialize, ::schemars::JsonSchema)]
@@ -120,7 +55,6 @@ macro_rules! tool {
         )
     }};
 
-    // 带参数描述版本，顺序与参数列表相同
     ($name:expr, $description:expr, |$($arg:ident : $ty:ty),*| $body:expr, $($desc:expr),* $(,)?) => {{
         #[derive(::serde::Deserialize, ::schemars::JsonSchema)]
         struct __ToolArgs {
@@ -174,10 +108,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use langchain_core_macro::tool;
+    use schemars::JsonSchema;
     use serde::Deserialize;
 
     #[derive(Debug)]
     enum TestError {
+        #[expect(unused)]
         Json(serde_json::Error),
     }
 
@@ -242,12 +179,38 @@ mod tests {
         );
 
         assert_eq!(tool.function.name, "calc_add2");
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&tool.function.parameters).unwrap()
-        );
         if let Value::Object(map) = &tool.function.parameters {
             assert!(map.get("properties").is_some());
+        } else {
+            panic!("parameters must be object");
+        }
+    }
+
+    #[derive(Debug)]
+    enum NodeRunError {
+        #[expect(unused)]
+        Json(serde_json::Error),
+    }
+
+    impl From<serde_json::Error> for NodeRunError {
+        fn from(e: serde_json::Error) -> Self {
+            NodeRunError::Json(e)
+        }
+    }
+
+    #[tool(description = "计算两个数的和", args(a = "第一个数", b = "第二个数"))]
+    async fn add_attr(a: f64, b: f64) -> Result<f64, NodeRunError> {
+        Ok(a + b)
+    }
+
+    #[test]
+    fn tool_attribute_builds_registered_tool() {
+        let tool: RegisteredTool<NodeRunError> = add_attr_tool();
+        assert_eq!(tool.function.name, "add_attr");
+        if let Value::Object(map) = &tool.function.parameters {
+            assert!(map.get("type").is_some());
+            assert!(map.get("properties").is_some());
+            assert!(map.get("required").is_some());
         } else {
             panic!("parameters must be object");
         }

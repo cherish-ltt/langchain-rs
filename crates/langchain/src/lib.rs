@@ -95,7 +95,9 @@ mod tests {
 
     #[derive(Debug)]
     enum TestError {
+        #[expect(unused)]
         Model,
+        #[expect(unused)]
         Tool,
     }
 
@@ -130,6 +132,7 @@ mod tests {
         }
     }
 
+    #[expect(unused)]
     #[derive(Debug)]
     struct TestTool;
 
@@ -143,6 +146,7 @@ mod tests {
         Tool,
     }
 
+    #[expect(unused)]
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     enum TestBranch {
         Default,
