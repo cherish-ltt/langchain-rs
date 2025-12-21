@@ -1,20 +1,30 @@
-name: Rust
+name: Rust # 工作流名称，会显示在 GitHub Actions 的列表中
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+on: # 触发条件
+  push: # 当有代码 push 时触发
+    branches: ["main", "dev"] # 在 push 到 main 或 dev 分支时触发
+  pull_request: # 当有 Pull Request 时触发
+    branches: ["main"] # 只在目标分支是 main 的 PR 上运行
 
-env:
-  CARGO_TERM_COLOR: always
+env: # 所有 Job 共用的环境变量
+  CARGO_TERM_COLOR: always # 让 cargo 的终端输出始终带颜色，方便阅读日志
 
-jobs:
-  build:
+jobs: # 定义要执行的一组 Job
+  build: # Job 名称（自定义的 key）
+    runs-on: ubuntu-latest # 指定运行环境，这里使用 GitHub 托管的最新版 Ubuntu
 
-    runs-on: ubuntu-latest
+    steps: # 这个 Job 中要按顺序执行的一系列步骤
+      - uses: actions/checkout@v4 # 第一步：把当前仓库代码检出到 runner 上
+      - uses: actions-rs/toolchain@v1 # 第二步：安装 Rust 工具链
+        with: # 给这个 Action 传参数
+          toolchain: stable # 安装 stable 渠道的 Rust（稳定版）
+          override: true # 把这个工具链设为默认，后续命令直接用
+          components: rustfmt, clippy # 安装 rustfmt 和 clippy 组件，支持 fmt 和 clippy
+      - name: Check fmt # 第三步：检查代码是否符合格式化要求
+        run: cargo fmt --check --all # 检查所有文件是否格式化正确
 
-    steps:
-    - uses: actions/checkout@v4
-    - name: Run tests
-      run: cargo test --verbose
+      - name: Run clippy # 第四步：运行 clippy 检查代码是否符合 Rust 最佳实践
+        run: cargo clippy --workspace --tests -- -D warnings # 检查所有文件是否符合 clippy 规则，包括测试代码
+
+      - name: Run tests # 第五步：运行测试
+        run: cargo test --verbose # 实际要执行的命令：运行所有测试，并输出详细日志

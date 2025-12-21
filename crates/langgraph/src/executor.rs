@@ -130,7 +130,9 @@ mod test {
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     enum TestBranch {
+        #[expect(unused)]
         Default,
+        #[expect(unused)]
         Alt,
     }
 
