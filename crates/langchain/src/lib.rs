@@ -89,7 +89,7 @@ mod tests {
     use langchain_core::{
         message::{FunctionCall, Message, ToolCall},
         request::ToolFunction,
-        response::{TokensDetails, Usage},
+        response::Usage,
         state::{RegisteredTool, ToolFuture},
     };
     use langgraph::{graph::Graph, label::GraphLabel, state_graph::StateGraph};
@@ -124,14 +124,7 @@ mod tests {
                 name: None,
             };
 
-            let usage = Usage {
-                prompt_tokens: 0,
-                completion_tokens: 0,
-                total_tokens: 0,
-                completion_tokens_details: TokensDetails {
-                    reasoning_tokens: 0,
-                },
-            };
+            let usage = Usage::default();
             Ok(ChatCompletion {
                 messages: vec![msg],
                 usage,

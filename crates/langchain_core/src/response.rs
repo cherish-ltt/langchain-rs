@@ -19,7 +19,7 @@ pub struct Choice {
     pub finish_reason: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -27,7 +27,7 @@ pub struct Usage {
     pub completion_tokens_details: TokensDetails,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct TokensDetails {
     pub reasoning_tokens: u32,
 }
