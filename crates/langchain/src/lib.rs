@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::future::try_join_all;
 use langchain_core::{
     message::Message,
-    state::{ChatModel, MessagesState, RegisteredTool},
+    state::{ChatModel, ChatCompletion, MessagesState, RegisteredTool},
 };
 use langgraph::node::Node;
 use serde_json::Value;
@@ -35,8 +35,8 @@ where
 {
     async fn run(&self, input: &MessagesState) -> Result<MessagesState, E> {
         let mut next = input.clone();
-        let reply = self.model.invoke(&next.messages).await?;
-        next.push_message(reply);
+        let completion: ChatCompletion = self.model.invoke(&next.messages).await?;
+        next.push_message(completion.message);
         next.increment_llm_calls();
         Ok(next)
     }
@@ -108,7 +108,7 @@ mod tests {
     impl ChatModel for TestModel {
         type Error = TestError;
 
-        async fn invoke(&self, _messages: &[Message]) -> Result<Message, Self::Error> {
+        async fn invoke(&self, _messages: &[Message]) -> Result<ChatCompletion, Self::Error> {
             let call = ToolCall {
                 id: "call1".to_string(),
                 type_name: "function".to_string(),
@@ -117,10 +117,15 @@ mod tests {
                     arguments: serde_json::Value::Null,
                 },
             };
-            Ok(Message::Assistant {
+            let msg = Message::Assistant {
                 content: "assistant".to_string(),
                 tool_calls: Some(vec![call]),
                 name: None,
+            };
+            Ok(ChatCompletion {
+                message: msg.clone(),
+                messages: vec![msg],
+                usage: None,
             })
         }
 

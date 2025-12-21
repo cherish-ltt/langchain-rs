@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use futures_core::Stream;
 use std::pin::Pin;
 
-use crate::message::{Message, ToolCall};
+use crate::{
+    message::{Message, ToolCall},
+    response::Usage,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct MessagesState {
@@ -48,13 +51,20 @@ impl MessagesState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ChatCompletion {
+    pub message: Message,
+    pub messages: Vec<Message>,
+    pub usage: Option<Usage>,
+}
+
 pub type ChatStream<E> = Pin<Box<dyn Stream<Item = Result<Message, E>> + Send>>;
 
 #[async_trait]
 pub trait ChatModel: Send + Sync {
     type Error: Send + Sync + 'static;
 
-    async fn invoke(&self, messages: &[Message]) -> Result<Message, Self::Error>;
+    async fn invoke(&self, messages: &[Message]) -> Result<ChatCompletion, Self::Error>;
 
     async fn stream(&self, messages: &[Message]) -> Result<ChatStream<Self::Error>, Self::Error>;
 }
