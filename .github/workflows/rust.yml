@@ -24,6 +24,9 @@ jobs: # 定义要执行的一组 Job
         run: cargo fmt --check --all # 检查所有文件是否格式化正确
 
       - name: Run clippy # 第四步：运行 clippy 检查代码是否符合 Rust 最佳实践
+        # --test 在默认lib 和 bin目标基础上额外包含tests，
+        # -- -D warnings 开启 clippy 所有警告，-D 是deny（拒绝） 警告，也会导致构建失败
+        # --all-targets 检查所有目标，包括 lib、bin、example、benches、test 等
         run: cargo clippy --workspace --tests -- -D warnings # 检查所有文件是否符合 clippy 规则，包括测试代码
 
       - name: Run tests # 第五步：运行测试
