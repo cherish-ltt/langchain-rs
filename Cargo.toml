@@ -14,6 +14,7 @@ async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 downcast-rs = "2.0.1"
+schemars = { version = "0.8", features = ["derive"] }
 
 
 [profile.dev]
