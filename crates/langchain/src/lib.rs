@@ -45,7 +45,7 @@ where
         let mut next = input.clone();
         let completion: ChatCompletion = self
             .model
-            .invoke(&next.messages, &self.tools)
+            .invoke(next.messages.iter().cloned().collect(), self.tools.clone())
             .await
             .map_err(|e| ReActAgentError::Model(Box::new(e)))?;
         tracing::debug!("LLM completion: {:?}", completion);
@@ -258,8 +258,8 @@ mod tests {
 
         async fn invoke(
             &self,
-            _messages: &[Message],
-            _tools: &[ToolSpec],
+            _messages: Vec<Message>,
+            _tools: Vec<ToolSpec>,
         ) -> Result<ChatCompletion, Self::Error> {
             let call = ToolCall {
                 id: "call1".to_string(),
@@ -284,7 +284,7 @@ mod tests {
 
         async fn stream(
             &self,
-            _messages: &[Message],
+            _messages: Vec<Message>,
         ) -> Result<langchain_core::state::ChatStream<Self::Error>, Self::Error> {
             unimplemented!()
         }

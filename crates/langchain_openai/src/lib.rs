@@ -36,12 +36,12 @@ impl ChatModel for ChatOpenAI {
 
     async fn invoke(
         &self,
-        messages: &[Message],
-        tools: &[ToolSpec],
+        messages: Vec<Message>,
+        tools: Vec<ToolSpec>,
     ) -> Result<ChatCompletion, Self::Error> {
         let request = RequestBody::from_model(&self.model)
-            .with_messages(messages.to_vec())
-            .with_tools(tools.to_vec());
+            .with_messages(messages)
+            .with_tools(tools);
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -103,7 +103,10 @@ impl ChatModel for ChatOpenAI {
         })
     }
 
-    async fn stream(&self, _messages: &[Message]) -> Result<ChatStream<Self::Error>, Self::Error> {
+    async fn stream(
+        &self,
+        _messages: Vec<Message>,
+    ) -> Result<ChatStream<Self::Error>, Self::Error> {
         unimplemented!("stream is not implemented yet")
     }
 }
@@ -182,7 +185,7 @@ mod tests {
         let client = ChatOpenAIBuilder::from_base(model, base_url, api_key).build();
         let messages = vec![Message::user("hello")];
 
-        let result = client.invoke(&messages, &[]).await;
+        let result = client.invoke(messages, vec![]).await;
 
         match result {
             Ok(completion) => {

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use futures_core::Stream;
+use im::Vector;
 use std::pin::Pin;
 
 use crate::{
@@ -10,20 +11,20 @@ use crate::{
 
 #[derive(Debug, Clone, Default)]
 pub struct MessagesState {
-    pub messages: Vec<Message>,
+    pub messages: Vector<Message>,
     pub llm_calls: u32,
 }
 
 impl MessagesState {
     pub fn new(messages: Vec<Message>) -> Self {
         Self {
-            messages,
+            messages: messages.into_iter().collect(),
             llm_calls: 0,
         }
     }
 
     pub fn push_message(&mut self, message: Message) {
-        self.messages.push(message);
+        self.messages.push_back(message);
     }
 
     pub fn extend_messages(&mut self, messages: Vec<Message>) {
@@ -35,7 +36,12 @@ impl MessagesState {
     }
 
     pub fn last_message(&self) -> Option<&Message> {
-        self.messages.last()
+        let len = self.messages.len();
+        if len == 0 {
+            None
+        } else {
+            self.messages.get(len - 1)
+        }
     }
 
     pub fn last_assistant(&self) -> Option<&Message> {
@@ -70,9 +76,9 @@ pub trait ChatModel: Send + Sync {
 
     async fn invoke(
         &self,
-        messages: &[Message],
-        tools: &[ToolSpec],
+        messages: Vec<Message>,
+        tools: Vec<ToolSpec>,
     ) -> Result<ChatCompletion, Self::Error>;
 
-    async fn stream(&self, messages: &[Message]) -> Result<ChatStream<Self::Error>, Self::Error>;
+    async fn stream(&self, messages: Vec<Message>) -> Result<ChatStream<Self::Error>, Self::Error>;
 }

@@ -12,6 +12,14 @@ pub struct StateGraph<S, E, B: BranchKind> {
     pub entry: InternedGraphLabel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunStrategy {
+    StopAtNonLinear,
+    PickFirst,
+    PickLast,
+    Parallel,
+}
+
 impl<S, E, B: BranchKind> StateGraph<S, E, B> {
     pub fn new(entry: impl GraphLabel, graph: Graph<S, S, E, B>) -> Self {
         Self {
@@ -76,6 +84,37 @@ impl<S, E, B: BranchKind> StateGraph<S, E, B> {
             }
 
             current = next[0];
+        }
+
+        Ok((state, current))
+    }
+
+    pub async fn run(
+        &self,
+        mut state: S,
+        max_steps: usize,
+        strategy: RunStrategy,
+    ) -> Result<(S, InternedGraphLabel), GraphStepError<E>>
+    where
+        S: Send + Sync + 'static,
+        E: Send + Sync + 'static,
+    {
+        let mut current = self.entry;
+
+        for _ in 0..max_steps {
+            let (new_state, next) = self.graph.run_once(current, &state).await?;
+            state = new_state;
+
+            match next.len() {
+                0 => return Ok((state, current)),
+                1 => current = next[0],
+                _ => match strategy {
+                    RunStrategy::StopAtNonLinear => return Ok((state, current)),
+                    RunStrategy::PickFirst => current = next[0],
+                    RunStrategy::PickLast => current = next[next.len() - 1],
+                    RunStrategy::Parallel => {}
+                },
+            }
         }
 
         Ok((state, current))
@@ -235,5 +274,56 @@ mod tests {
         assert_eq!(runner.state, 3);
         assert_eq!(runner.current, TestLabel::C.intern());
         assert!(next3.is_empty());
+    }
+
+    #[tokio::test]
+    async fn state_graph_run_strategy_stop_at_non_linear() {
+        let mut sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::from_entry(TestLabel::A);
+
+        sg.add_node(TestLabel::A, AddOne);
+        sg.add_node(TestLabel::B, AddOne);
+        sg.add_node(TestLabel::C, AddOne);
+
+        sg.add_edge(TestLabel::A, TestLabel::B);
+        sg.add_edge(TestLabel::A, TestLabel::C);
+
+        let (final_state, final_label) = sg.run(0, 10, RunStrategy::StopAtNonLinear).await.unwrap();
+
+        assert_eq!(final_state, 1);
+        assert_eq!(final_label, TestLabel::A.intern());
+    }
+
+    #[tokio::test]
+    async fn state_graph_run_strategy_pick_first() {
+        let mut sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::from_entry(TestLabel::A);
+
+        sg.add_node(TestLabel::A, AddOne);
+        sg.add_node(TestLabel::B, AddOne);
+        sg.add_node(TestLabel::C, AddOne);
+
+        sg.add_edge(TestLabel::A, TestLabel::B);
+        sg.add_edge(TestLabel::A, TestLabel::C);
+
+        let (final_state, final_label) = sg.run(0, 10, RunStrategy::PickFirst).await.unwrap();
+
+        assert_eq!(final_state, 2);
+        assert_eq!(final_label, TestLabel::B.intern());
+    }
+
+    #[tokio::test]
+    async fn state_graph_run_strategy_pick_last() {
+        let mut sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::from_entry(TestLabel::A);
+
+        sg.add_node(TestLabel::A, AddOne);
+        sg.add_node(TestLabel::B, AddOne);
+        sg.add_node(TestLabel::C, AddOne);
+
+        sg.add_edge(TestLabel::A, TestLabel::B);
+        sg.add_edge(TestLabel::A, TestLabel::C);
+
+        let (final_state, final_label) = sg.run(0, 10, RunStrategy::PickLast).await.unwrap();
+
+        assert_eq!(final_state, 2);
+        assert_eq!(final_label, TestLabel::C.intern());
     }
 }

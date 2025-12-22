@@ -10,4 +10,5 @@ async-trait = { workspace = true }
 futures-core = "0.3"
 schemars = { workspace = true }
 thiserror = { workspace = true }
+im = { workspace = true }
 langchain_core_macro = { path = "./macro" }
