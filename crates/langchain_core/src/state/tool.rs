@@ -330,16 +330,10 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, thiserror::Error)]
     enum NodeRunError {
-        #[expect(unused)]
-        Json(serde_json::Error),
-    }
-
-    impl From<serde_json::Error> for NodeRunError {
-        fn from(e: serde_json::Error) -> Self {
-            NodeRunError::Json(e)
-        }
+        #[error(transparent)]
+        Json(#[from] serde_json::Error),
     }
 
     #[tool(description = "计算两个数的和", args(a = "第一个数", b = "第二个数"))]
@@ -349,8 +343,76 @@ mod tests {
 
     #[test]
     fn tool_attribute_builds_registered_tool() {
-        let tool: RegisteredTool<NodeRunError> = add_attr_tool();
+        let tool: RegisteredTool<langchain_core::ToolError> = add_attr_tool();
         assert_eq!(tool.function.name, "add_attr");
+        if let Value::Object(map) = &tool.function.parameters {
+            assert!(map.get("type").is_some());
+            assert!(map.get("properties").is_some());
+            assert!(map.get("required").is_some());
+        } else {
+            panic!("parameters must be object");
+        }
+    }
+
+    #[tool(
+        description = "计算两个数的和（无错误）",
+        args(a = "第一个数", b = "第二个数")
+    )]
+    async fn add_attr_infallible(a: f64, b: f64) -> f64 {
+        a + b
+    }
+
+    #[test]
+    fn tool_attribute_supports_infallible_return() {
+        let tool: RegisteredTool<langchain_core::ToolError> = add_attr_infallible_tool();
+        assert_eq!(tool.function.name, "add_attr_infallible");
+        if let Value::Object(map) = &tool.function.parameters {
+            assert!(map.get("type").is_some());
+            assert!(map.get("properties").is_some());
+            assert!(map.get("required").is_some());
+        } else {
+            panic!("parameters must be object");
+        }
+    }
+
+    #[derive(Debug)]
+    enum FnOnlyError {
+        #[expect(unused)]
+        Oops,
+    }
+
+    #[derive(Debug)]
+    enum OverrideError {
+        #[expect(unused)]
+        Json(serde_json::Error),
+        Fn(FnOnlyError),
+    }
+
+    impl From<serde_json::Error> for OverrideError {
+        fn from(e: serde_json::Error) -> Self {
+            OverrideError::Json(e)
+        }
+    }
+
+    impl From<FnOnlyError> for OverrideError {
+        fn from(e: FnOnlyError) -> Self {
+            OverrideError::Fn(e)
+        }
+    }
+
+    #[tool(
+        description = "可能失败的工具（覆盖错误类型）",
+        args(a = "输入"),
+        error = OverrideError
+    )]
+    async fn tool_attr_error_override(a: f64) -> Result<f64, FnOnlyError> {
+        Ok(a)
+    }
+
+    #[test]
+    fn tool_attribute_supports_error_override() {
+        let tool: RegisteredTool<OverrideError> = tool_attr_error_override_tool();
+        assert_eq!(tool.function.name, "tool_attr_error_override");
         if let Value::Object(map) = &tool.function.parameters {
             assert!(map.get("type").is_some());
             assert!(map.get("properties").is_some());

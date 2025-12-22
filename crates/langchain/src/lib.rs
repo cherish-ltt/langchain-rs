@@ -126,6 +126,8 @@ enum ReactAgentBranch {
     End,
 }
 
+pub use langchain_core::ToolError;
+
 #[derive(Debug, Error)]
 pub enum ReActAgentError {
     #[error("model error")]
@@ -147,6 +149,7 @@ impl From<GraphStepError<ReActAgentError>> for ReActAgentError {
 
 pub struct ReactAgent {
     graph: StateGraph<MessagesState, ReActAgentError, ReactAgentBranch>,
+    system_prompt: Option<String>,
 }
 
 impl ReactAgent {
@@ -190,11 +193,22 @@ impl ReactAgent {
 
         graph.add_edge(ReactAgentLabel::Tool, ReactAgentLabel::Llm);
 
-        Self { graph }
+        Self {
+            graph,
+            system_prompt: None,
+        }
+    }
+
+    pub fn with_system_prompt(mut self, system_prompt: String) -> Self {
+        self.system_prompt = Some(system_prompt);
+        self
     }
 
     pub async fn invoke(&self, message: Message) -> Result<MessagesState, ReActAgentError> {
         let mut state = MessagesState::default();
+        if let Some(system_prompt) = &self.system_prompt {
+            state.push_message(Message::system(system_prompt.clone()));
+        }
         state.push_message(message);
         let max_steps = 25;
         let (state, _) = self.graph.run_until_stuck(state, max_steps).await?;

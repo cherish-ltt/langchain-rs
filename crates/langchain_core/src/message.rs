@@ -185,12 +185,12 @@ impl ToolCall {
     }
 
     pub fn arguments(&self) -> serde_json::Value {
-        let value = &self
-            .function
-            .arguments
-            .as_str()
-            .expect("function arguments must be a string");
-        serde_json::from_str(value).expect("function arguments must be valid json")
+        match &self.function.arguments {
+            serde_json::Value::String(value) => {
+                serde_json::from_str(value).expect("function arguments must be valid json")
+            }
+            value => value.clone(),
+        }
     }
 
     pub fn id(&self) -> &str {

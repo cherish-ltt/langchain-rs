@@ -4,7 +4,7 @@ use darling::ast::NestedMeta;
 use darling::{Error, FromMeta};
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Expr, ItemFn, Lit, Meta, parse_macro_input, spanned::Spanned};
+use syn::{Expr, ItemFn, Lit, Meta, parse_macro_input, parse_quote, spanned::Spanned};
 
 #[derive(Debug, FromMeta)]
 struct ToolAttrArgs {
@@ -13,11 +13,48 @@ struct ToolAttrArgs {
     description: String,
     #[darling(default)]
     args: ArgsMeta,
+    #[darling(default)]
+    error: Option<ErrorTypeMeta>,
 }
 
 #[derive(Debug, Default)]
 struct ArgsMeta {
     docs: BTreeMap<String, String>,
+}
+
+#[derive(Debug)]
+struct ErrorTypeMeta {
+    ty: syn::Type,
+}
+
+impl FromMeta for ErrorTypeMeta {
+    fn from_meta(item: &Meta) -> darling::Result<Self> {
+        match item {
+            Meta::NameValue(nv) => match &nv.value {
+                Expr::Path(p) => Ok(Self {
+                    ty: syn::Type::Path(syn::TypePath {
+                        qself: p.qself.clone(),
+                        path: p.path.clone(),
+                    }),
+                }),
+                Expr::Lit(expr_lit) => {
+                    if let Lit::Str(s) = &expr_lit.lit {
+                        let ty: syn::Type = syn::parse_str(&s.value()).map_err(|e| {
+                            Error::custom(format!("error must be a valid type: {e}"))
+                                .with_span(&expr_lit.lit)
+                        })?;
+                        Ok(Self { ty })
+                    } else {
+                        Err(Error::custom("error must be a type path or a string").with_span(nv))
+                    }
+                }
+                other => {
+                    Err(Error::custom("error must be a type path like `MyError`").with_span(other))
+                }
+            },
+            _ => Err(Error::custom("error must be `error = MyError`").with_span(item)),
+        }
+    }
 }
 
 impl FromMeta for ArgsMeta {
@@ -80,6 +117,7 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     let name_override = parsed.name.clone();
     let description = parsed.description;
     let arg_docs = parsed.args.docs;
+    let error_override = parsed.error.map(|v| v.ty);
 
     // 2. 分析原函数：名字、参数列表、返回类型
     let fn_name = &func.sig.ident;
@@ -126,62 +164,86 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // 3. 提取返回类型中的错误类型 E（Result<_, E>）
+    // 3. 分析返回类型：支持 `T` / `()` / `Result<T, E>`
     let output = &func.sig.output;
-    let err_ty = match output {
+    let (tool_err_ty, call_expr, extra_where_bounds): (
+        syn::Type,
+        proc_macro2::TokenStream,
+        Vec<proc_macro2::TokenStream>,
+    ) = match output {
+        syn::ReturnType::Default => {
+            let tool_err_ty = error_override
+                .clone()
+                .unwrap_or_else(|| parse_quote!(langchain_core::ToolError));
+            (
+                tool_err_ty,
+                quote! { Ok(#fn_name(#(#arg_pats),*).await) },
+                Vec::new(),
+            )
+        }
         syn::ReturnType::Type(_, ty) => {
-            // 期待形如 Result<T, E>
-            if let syn::Type::Path(tp) = ty.as_ref() {
-                if let Some(seg) = tp.path.segments.last() {
-                    if seg.ident == "Result" {
-                        if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
-                            if ab.args.len() == 2 {
-                                if let syn::GenericArgument::Type(e_ty) = &ab.args[1] {
-                                    e_ty.clone()
-                                } else {
-                                    return syn::Error::new(
-                                        ab.span(),
-                                        "tool: unsupported Result error type",
-                                    )
-                                    .to_compile_error()
-                                    .into();
-                                }
-                            } else {
-                                return syn::Error::new(
-                                    ab.span(),
-                                    "tool: Result must have two type parameters",
-                                )
-                                .to_compile_error()
-                                .into();
-                            }
-                        } else {
-                            return syn::Error::new(seg.span(), "tool: unsupported Result type")
-                                .to_compile_error()
-                                .into();
-                        }
-                    } else {
-                        return syn::Error::new(
-                            seg.span(),
-                            "tool: function must return Result<T, E>",
-                        )
-                        .to_compile_error()
-                        .into();
+            if let syn::Type::Path(tp) = ty.as_ref()
+                && let Some(seg) = tp.path.segments.last()
+                && seg.ident == "Result"
+            {
+                let ab = match &seg.arguments {
+                    syn::PathArguments::AngleBracketed(ab) => ab,
+                    _ => {
+                        return syn::Error::new(seg.span(), "tool: unsupported Result type")
+                            .to_compile_error()
+                            .into();
                     }
-                } else {
-                    return syn::Error::new(tp.span(), "tool: invalid return type path")
-                        .to_compile_error()
-                        .into();
-                }
-            } else {
-                return syn::Error::new(ty.span(), "tool: function must return Result<T, E>")
+                };
+                if ab.args.len() != 2 {
+                    return syn::Error::new(
+                        ab.span(),
+                        "tool: Result must have two type parameters",
+                    )
                     .to_compile_error()
                     .into();
+                }
+                let err_ty = match &ab.args[1] {
+                    syn::GenericArgument::Type(e_ty) => e_ty.clone(),
+                    _ => {
+                        return syn::Error::new(ab.span(), "tool: unsupported Result error type")
+                            .to_compile_error()
+                            .into();
+                    }
+                };
+
+                if let Some(tool_err_ty) = error_override.clone() {
+                    let mut extra_where_bounds = Vec::new();
+                    extra_where_bounds.push(quote! { #tool_err_ty: From<#err_ty> });
+                    (
+                        tool_err_ty.clone(),
+                        quote! { #fn_name(#(#arg_pats),*).await.map_err(#tool_err_ty::from) },
+                        extra_where_bounds,
+                    )
+                } else {
+                    let tool_err_ty: syn::Type = parse_quote!(langchain_core::ToolError);
+                    let mut extra_where_bounds = Vec::new();
+                    extra_where_bounds
+                        .push(quote! { #err_ty: ::std::error::Error + Send + Sync + 'static });
+                    (
+                        tool_err_ty,
+                        quote! {
+                            #fn_name(#(#arg_pats),*)
+                                .await
+                                .map_err(langchain_core::ToolError::tool_call)
+                        },
+                        extra_where_bounds,
+                    )
+                }
+            } else {
+                let tool_err_ty = error_override
+                    .clone()
+                    .unwrap_or_else(|| parse_quote!(langchain_core::ToolError));
+                (
+                    tool_err_ty,
+                    quote! { Ok(#fn_name(#(#arg_pats),*).await) },
+                    Vec::new(),
+                )
             }
-        }
-        _ => {
-            return syn::Error::new(func.sig.span(), "tool: function must return Result<T, E>")
-                .to_compile_error()
-                .into();
         }
     };
 
@@ -200,16 +262,17 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         #vis fn #tool_fn_ident(
-        ) -> langchain_core::state::RegisteredTool<#err_ty>
+        ) -> langchain_core::state::RegisteredTool<#tool_err_ty>
         where
-            #err_ty: From<serde_json::Error> + Send + Sync + 'static,
+            #tool_err_ty: From<serde_json::Error> + Send + Sync + 'static,
+            #(#extra_where_bounds,)*
         {
             langchain_core::state::RegisteredTool::from_typed(
                 #tool_name_lit.to_string(),
                 #description_lit.to_string(),
                 |args: #args_struct_ident| async move {
                     let #args_struct_ident { #(#arg_bindings),* } = args;
-                    #fn_name(#(#arg_pats),*).await
+                    #call_expr
                 },
             )
         }
