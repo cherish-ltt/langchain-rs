@@ -13,8 +13,20 @@ pub struct StateGraph<S, E, B: BranchKind> {
 }
 
 impl<S, E, B: BranchKind> StateGraph<S, E, B> {
-    pub fn new(entry: InternedGraphLabel, graph: Graph<S, S, E, B>) -> Self {
-        Self { graph, entry }
+    pub fn new(entry: impl GraphLabel, graph: Graph<S, S, E, B>) -> Self {
+        Self {
+            graph,
+            entry: entry.intern(),
+        }
+    }
+
+    pub fn from_entry(entry: impl GraphLabel) -> Self {
+        Self {
+            graph: Graph {
+                nodes: HashMap::new(),
+            },
+            entry: entry.intern(),
+        }
     }
 
     pub fn set_entry(&mut self, entry: impl GraphLabel) {
@@ -134,19 +146,14 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_linear_chain() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
-            nodes: HashMap::new(),
-        };
+        let mut sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::from_entry(TestLabel::A);
 
-        graph.add_node(TestLabel::A, AddOne);
-        graph.add_node(TestLabel::B, AddOne);
-        graph.add_node(TestLabel::C, AddOne);
+        sg.add_node(TestLabel::A, AddOne);
+        sg.add_node(TestLabel::B, AddOne);
+        sg.add_node(TestLabel::C, AddOne);
 
-        graph.add_node_edge(TestLabel::A, TestLabel::B);
-        graph.add_node_edge(TestLabel::B, TestLabel::C);
-
-        let entry = TestLabel::A.intern();
-        let sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::new(entry, graph);
+        sg.add_edge(TestLabel::A, TestLabel::B);
+        sg.add_edge(TestLabel::B, TestLabel::C);
 
         let (final_state, final_label) = sg.run_until_stuck(0, 10).await.unwrap();
 
@@ -156,26 +163,21 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_conditional_branch_taken() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
-            nodes: HashMap::new(),
-        };
+        let mut sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::from_entry(TestLabel::A);
 
-        graph.add_node(TestLabel::A, AddOne);
-        graph.add_node(TestLabel::B, AddOne);
+        sg.add_node(TestLabel::A, AddOne);
+        sg.add_node(TestLabel::B, AddOne);
 
         let mut branches = HashMap::new();
         branches.insert(TestBranch::Default, TestLabel::B.intern());
 
-        graph.add_node_condition_edge(TestLabel::A, branches, |state: &i32| {
+        sg.add_condition_edge(TestLabel::A, branches, |state: &i32| {
             if *state >= 0 {
                 vec![TestBranch::Default]
             } else {
                 Vec::new()
             }
         });
-
-        let entry = TestLabel::A.intern();
-        let sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::new(entry, graph);
 
         let (final_state, final_label) = sg.run_until_stuck(0, 10).await.unwrap();
 
@@ -185,25 +187,20 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_conditional_branch_not_taken_stops_at_predicate() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
-            nodes: HashMap::new(),
-        };
+        let mut sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::from_entry(TestLabel::A);
 
-        graph.add_node(TestLabel::A, AddOne);
+        sg.add_node(TestLabel::A, AddOne);
 
         let mut branches = HashMap::new();
         branches.insert(TestBranch::Default, TestLabel::B.intern());
 
-        graph.add_node_condition_edge(TestLabel::A, branches, |state: &i32| {
+        sg.add_condition_edge(TestLabel::A, branches, |state: &i32| {
             if *state > 0 {
                 vec![TestBranch::Default]
             } else {
                 Vec::new()
             }
         });
-
-        let entry = TestLabel::A.intern();
-        let sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::new(entry, graph);
 
         let (final_state, final_label) = sg.run_until_stuck(-1, 10).await.unwrap();
 
@@ -213,19 +210,14 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runner_steps_through_linear_chain() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
-            nodes: HashMap::new(),
-        };
+        let mut sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::from_entry(TestLabel::A);
 
-        graph.add_node(TestLabel::A, AddOne);
-        graph.add_node(TestLabel::B, AddOne);
-        graph.add_node(TestLabel::C, AddOne);
+        sg.add_node(TestLabel::A, AddOne);
+        sg.add_node(TestLabel::B, AddOne);
+        sg.add_node(TestLabel::C, AddOne);
 
-        graph.add_node_edge(TestLabel::A, TestLabel::B);
-        graph.add_node_edge(TestLabel::B, TestLabel::C);
-
-        let entry = TestLabel::A.intern();
-        let sg: StateGraph<i32, NodeError, TestBranch> = StateGraph::new(entry, graph);
+        sg.add_edge(TestLabel::A, TestLabel::B);
+        sg.add_edge(TestLabel::B, TestLabel::C);
 
         let mut runner = StateGraphRunner::new(&sg, 0);
 

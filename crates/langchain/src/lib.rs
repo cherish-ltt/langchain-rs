@@ -86,13 +86,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use langchain_core::tool;
     use langchain_core::{
         message::{FunctionCall, Message, ToolCall},
-        request::ToolFunction,
         response::Usage,
-        state::{RegisteredTool, ToolFuture},
+        state::RegisteredTool,
     };
-    use langgraph::{graph::Graph, label::GraphLabel, state_graph::StateGraph};
+    use langgraph::{label::GraphLabel, state_graph::StateGraph};
 
     #[derive(Debug)]
     enum TestError {
@@ -100,6 +100,14 @@ mod tests {
         Model,
         #[expect(unused)]
         Tool,
+        #[expect(unused)]
+        Json(serde_json::Error),
+    }
+
+    impl From<serde_json::Error> for TestError {
+        fn from(e: serde_json::Error) -> Self {
+            Self::Json(e)
+        }
     }
 
     #[derive(Debug)]
@@ -115,7 +123,7 @@ mod tests {
                 type_name: "function".to_string(),
                 function: FunctionCall {
                     name: "test_tool".to_string(),
-                    arguments: serde_json::Value::Null,
+                    arguments: serde_json::json!({}),
                 },
             };
             let msg = Message::Assistant {
@@ -143,8 +151,9 @@ mod tests {
     #[derive(Debug)]
     struct TestTool;
 
-    async fn test_tool_fn(_args: Value) -> Result<Value, TestError> {
-        Ok(Value::String("tool_result".to_string()))
+    #[tool(description = "test tool")]
+    async fn test_tool() -> Result<String, TestError> {
+        Ok("tool_result".to_string())
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash, GraphLabel)]
@@ -161,31 +170,20 @@ mod tests {
 
     #[tokio::test]
     async fn llm_and_tool_nodes_work_in_state_graph() {
-        let mut graph: Graph<MessagesState, MessagesState, TestError, TestBranch> = Graph {
-            nodes: HashMap::new(),
-        };
+        let mut sg: StateGraph<MessagesState, TestError, TestBranch> =
+            StateGraph::from_entry(TestLabel::Llm);
 
         let llm_node = LlmNode::new(TestModel);
 
+        let tool = test_tool_tool();
         let mut tools_map: HashMap<String, RegisteredTool<TestError>> = HashMap::new();
-        let function = ToolFunction {
-            name: "test_tool".to_string(),
-            description: "test tool".to_string(),
-            parameters: serde_json::json!({}),
-        };
-        let handler =
-            Box::new(|args: Value| -> ToolFuture<TestError> { Box::pin(test_tool_fn(args)) });
-        let tool = RegisteredTool { function, handler };
-        tools_map.insert("test_tool".to_string(), tool);
+        tools_map.insert(tool.function.name.clone(), tool);
         let tool_node = ToolNode::new(tools_map);
 
-        graph.add_node(TestLabel::Llm, llm_node);
-        graph.add_node(TestLabel::Tool, tool_node);
+        sg.add_node(TestLabel::Llm, llm_node);
+        sg.add_node(TestLabel::Tool, tool_node);
 
-        graph.add_node_edge(TestLabel::Llm, TestLabel::Tool);
-
-        let entry = TestLabel::Llm.intern();
-        let sg: StateGraph<MessagesState, TestError, TestBranch> = StateGraph::new(entry, graph);
+        sg.add_edge(TestLabel::Llm, TestLabel::Tool);
 
         let initial = MessagesState::new(vec![Message::user("hello")]);
 

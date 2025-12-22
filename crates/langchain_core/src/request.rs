@@ -1,3 +1,5 @@
+//! 暂时使用的是OpenAI的标准，后面对接其他标准再进行合并配置
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

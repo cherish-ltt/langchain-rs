@@ -1,3 +1,5 @@
+//! 暂时使用的是OpenAI的标准，后面对接其他标准再进行合并配置
+
 use serde::{Deserialize, Serialize};
 
 /// 聊天消息，表示不同角色的消息类型

@@ -37,7 +37,77 @@ impl<E> RegisteredTool<E> {
 }
 
 #[macro_export]
-macro_rules! tool {
+macro_rules! tool_fn {
+    ($name:expr, $description:expr, error = $err:ty, |$($arg:ident : $ty:ty),*| $body:expr) => {{
+        #[derive(::serde::Deserialize, ::schemars::JsonSchema)]
+        struct __ToolArgs {
+            $( $arg: $ty ),*
+        }
+
+        $crate::state::RegisteredTool::<$err>::from_typed(
+            $name.to_string(),
+            $description.to_string(),
+            |args: __ToolArgs| async move {
+                let __ToolArgs { $( $arg ),* } = args;
+                $body
+            }
+        )
+    }};
+
+    ($name:expr, $description:expr, error = $err:ty, |$($arg:ident : $ty:ty),*| $body:expr, $($desc:expr),* $(,)?) => {{
+        #[derive(::serde::Deserialize, ::schemars::JsonSchema)]
+        struct __ToolArgs {
+            $(
+                #[doc = $desc]
+                $arg: $ty
+            ),*
+        }
+
+        $crate::state::RegisteredTool::<$err>::from_typed(
+            $name.to_string(),
+            $description.to_string(),
+            |args: __ToolArgs| async move {
+                let __ToolArgs { $( $arg ),* } = args;
+                $body
+            }
+        )
+    }};
+
+    ($name:expr, $description:expr, infer, |$($arg:ident : $ty:ty),*| $body:expr) => {{
+        #[derive(::serde::Deserialize, ::schemars::JsonSchema)]
+        struct __ToolArgs {
+            $( $arg: $ty ),*
+        }
+
+        $crate::state::RegisteredTool::from_typed(
+            $name.to_string(),
+            $description.to_string(),
+            |args: __ToolArgs| async move {
+                let __ToolArgs { $( $arg ),* } = args;
+                $body
+            }
+        )
+    }};
+
+    ($name:expr, $description:expr, infer, |$($arg:ident : $ty:ty),*| $body:expr, $($desc:expr),* $(,)?) => {{
+        #[derive(::serde::Deserialize, ::schemars::JsonSchema)]
+        struct __ToolArgs {
+            $(
+                #[doc = $desc]
+                $arg: $ty
+            ),*
+        }
+
+        $crate::state::RegisteredTool::from_typed(
+            $name.to_string(),
+            $description.to_string(),
+            |args: __ToolArgs| async move {
+                let __ToolArgs { $( $arg ),* } = args;
+                $body
+            }
+        )
+    }};
+
     ($name:expr, $description:expr, |$($arg:ident : $ty:ty),*| $body:expr) => {{
 
         #[derive(::serde::Deserialize, ::schemars::JsonSchema)]
@@ -155,7 +225,7 @@ mod tests {
 
     #[test]
     fn tool_macro_builds_registered_tool_basic() {
-        let tool: RegisteredTool<serde_json::Error> = tool!(
+        let tool: RegisteredTool<serde_json::Error> = tool_fn!(
             "calc_add",
             "add numbers via llm",
             |a: i32, b: i32| Ok(a + b)
@@ -171,7 +241,7 @@ mod tests {
 
     #[test]
     fn tool_macro_builds_registered_tool_with_descriptions() {
-        let tool: RegisteredTool<serde_json::Error> = tool!(
+        let tool: RegisteredTool<serde_json::Error> = tool_fn!(
             "calc_add2",
             "add numbers via llm 2",
             |a: i32, b: i32| Ok(a + b),
@@ -180,6 +250,59 @@ mod tests {
         );
 
         assert_eq!(tool.function.name, "calc_add2");
+        if let Value::Object(map) = &tool.function.parameters {
+            assert!(map.get("properties").is_some());
+        } else {
+            panic!("parameters must be object");
+        }
+    }
+
+    #[test]
+    fn tool_macro_supports_error_override() {
+        let tool: RegisteredTool<TestError> = tool_fn!(
+            "calc_add3",
+            "add numbers via llm 3",
+            error = TestError,
+            |a: i32, b: i32| Ok(a + b)
+        );
+
+        assert_eq!(tool.function.name, "calc_add3");
+        if let Value::Object(map) = &tool.function.parameters {
+            assert!(map.get("properties").is_some());
+        } else {
+            panic!("parameters must be object");
+        }
+    }
+
+    #[test]
+    fn tool_macro_supports_infer_mode() {
+        let tool: RegisteredTool<TestError> = tool_fn!(
+            "calc_add4",
+            "add numbers via llm 4",
+            infer,
+            |a: i32, b: i32| Ok(a + b)
+        );
+
+        assert_eq!(tool.function.name, "calc_add4");
+        if let Value::Object(map) = &tool.function.parameters {
+            assert!(map.get("properties").is_some());
+        } else {
+            panic!("parameters must be object");
+        }
+    }
+
+    #[test]
+    fn tool_macro_supports_error_and_parameters_description() {
+        let tool: RegisteredTool<TestError> = tool_fn!(
+            "calc_add5",
+            "add numbers via llm 5",
+            error = TestError,
+            |a: i32, b: i32| Ok(a + b),
+            "first number",
+            "second number",
+        );
+
+        assert_eq!(tool.function.name, "calc_add5");
         if let Value::Object(map) = &tool.function.parameters {
             assert!(map.get("properties").is_some());
         } else {
