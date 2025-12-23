@@ -2,6 +2,7 @@ use crate::{
     edge::{BranchKind, Edge},
     graph::{Graph, GraphError, GraphStepError},
     label::InternedGraphLabel,
+    node::EventSink,
 };
 
 pub struct Executor<'g, I, O, E, B: BranchKind> {
@@ -97,6 +98,23 @@ impl<I, O, E, B: BranchKind> Graph<I, O, E, B> {
 
         Ok((output, next_nodes))
     }
+}
+
+struct NoopSink<Ev> {
+    _marker: std::marker::PhantomData<Ev>,
+}
+
+impl<Ev> Default for NoopSink<Ev> {
+    fn default() -> Self {
+        Self {
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<Ev: Send> EventSink<Ev> for NoopSink<Ev> {
+    async fn emit(&mut self, _event: Ev) {}
 }
 
 #[cfg(test)]

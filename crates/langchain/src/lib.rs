@@ -8,9 +8,9 @@ use langchain_core::{
     state::{ChatCompletion, ChatModel, MessagesState, RegisteredTool, ToolFn},
 };
 use langgraph::{
-    graph::GraphError,
-    graph::GraphStepError,
+    graph::{GraphError, GraphStepError},
     label::{BaseGraphLabel, GraphLabel},
+    state_graph::RunStrategy,
 };
 use langgraph::{node::Node, state_graph::StateGraph};
 use serde_json::Value;
@@ -210,7 +210,10 @@ impl ReactAgent {
         }
         state.push_message(message);
         let max_steps = 25;
-        let (state, _) = self.graph.run_until_stuck(state, max_steps).await?;
+        let (state, _) = self
+            .graph
+            .run(state, max_steps, RunStrategy::StopAtNonLinear)
+            .await?;
         Ok(state)
     }
 }
@@ -236,6 +239,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use langchain_core::state::ChatStreamEvent;
     use langchain_core::tool;
     use langchain_core::{
         message::{FunctionCall, Message, ToolCall},
@@ -285,8 +289,26 @@ mod tests {
         async fn stream(
             &self,
             _messages: Vec<Message>,
+            _tools: Vec<ToolSpec>,
         ) -> Result<langchain_core::state::ChatStream<Self::Error>, Self::Error> {
-            unimplemented!()
+            use async_stream::try_stream;
+
+            let stream = try_stream! {
+                yield ChatStreamEvent::Content("assistant".to_string());
+                yield ChatStreamEvent::ToolCallDelta {
+                    index: 0,
+                    id: Some("call1".to_string()),
+                    type_name: Some("function".to_string()),
+                    name: Some("test_tool".to_string()),
+                    arguments: Some("{}".to_string()),
+                };
+                yield ChatStreamEvent::Done {
+                    finish_reason: Some("stop".to_string()),
+                    usage: Some(Usage::default()),
+                };
+            };
+
+            Ok(Box::pin(stream))
         }
     }
 

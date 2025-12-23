@@ -12,6 +12,11 @@ use crate::{
 #[derive(Debug, Error)]
 pub enum NodeError {}
 
+#[async_trait]
+pub trait EventSink<Ev>: Send {
+    async fn emit(&mut self, event: Ev);
+}
+
 /// 节点 trait，定义了节点的运行行为
 #[async_trait]
 pub trait Node<I, O, E>: Downcast + Send + Sync + 'static {

@@ -3,11 +3,13 @@
 
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use langchain_core::{
     message::Message,
     request::{RequestBody, ToolSpec},
     response::ResponseBody,
-    state::{ChatCompletion, ChatModel, ChatStream},
+    response::Usage,
+    state::{ChatCompletion, ChatModel, ChatStream, ChatStreamEvent},
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
@@ -42,7 +44,10 @@ impl ChatModel for ChatOpenAI {
         let request = RequestBody::from_model(&self.model)
             .with_messages(messages)
             .with_tools(tools);
-
+        tracing::debug!(
+            "OpenAI API request: {}",
+            serde_json::to_string_pretty(&request).unwrap()
+        );
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
@@ -65,20 +70,19 @@ impl ChatModel for ChatOpenAI {
                 }
             })?;
 
-        let response = response.error_for_status().map_err(|e| {
-            tracing::error!("OpenAI API error: {:?}", e);
-            if let Some(status) = e.status() {
-                match status.as_u16() {
-                    401 => OpenAIError::InvalidApiKey,
-                    404 => OpenAIError::ModelNotFound,
-                    _ => OpenAIError::Other(e.to_string()),
-                }
-            } else if e.is_timeout() {
-                OpenAIError::Timeout
-            } else {
-                OpenAIError::Http(e)
-            }
-        })?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("failed to read error body: {e}"));
+            tracing::error!("OpenAI API error: status = {status}, body = {body}");
+            return Err(match status.as_u16() {
+                401 => OpenAIError::InvalidApiKey,
+                404 => OpenAIError::ModelNotFound,
+                _ => OpenAIError::Other(format!("status: {status}, body: {body}")),
+            });
+        }
 
         let response: ResponseBody = response
             .json::<ResponseBody>()
@@ -105,10 +109,183 @@ impl ChatModel for ChatOpenAI {
 
     async fn stream(
         &self,
-        _messages: Vec<Message>,
+        messages: Vec<Message>,
+        tools: Vec<ToolSpec>,
     ) -> Result<ChatStream<Self::Error>, Self::Error> {
-        unimplemented!("stream is not implemented yet")
+        let mut request = RequestBody::from_model(&self.model)
+            .with_messages(messages)
+            .with_tools(tools);
+        request.stream = true;
+
+        tracing::debug!(
+            "OpenAI API request: {}",
+            serde_json::to_string_pretty(&request).unwrap()
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+                .map_err(|e| OpenAIError::InvalidHeaderValue(e.to_string()))?,
+        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+        let response = self
+            .client
+            .post(format!("{}{CHAT_COMPLETIONS}", self.base_url))
+            .headers(headers)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    OpenAIError::Timeout
+                } else {
+                    OpenAIError::Http(e)
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("failed to read error body: {e}"));
+            tracing::error!("OpenAI API error: status = {status}, body = {body}");
+            return Err(match status.as_u16() {
+                401 => OpenAIError::InvalidApiKey,
+                404 => OpenAIError::ModelNotFound,
+                _ => OpenAIError::Other(format!("status: {status}, body: {body}")),
+            });
+        }
+
+        let stream = async_stream::try_stream! {
+            let mut buffer = String::new();
+            let mut done_emitted = false;
+            let mut bytes_stream = response.bytes_stream();
+
+            while let Some(chunk) = bytes_stream.next().await {
+                let chunk = chunk.map_err(OpenAIError::Http)?;
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+                while let Some((event, rest)) = split_sse_event(&buffer) {
+                    buffer = rest;
+                    let data = extract_sse_data(&event);
+                    if data.is_empty() {
+                        continue;
+                    }
+                    if data.trim() == "[DONE]" {
+                        if !done_emitted {
+                            yield ChatStreamEvent::Done { finish_reason: None, usage: None };
+                        }
+                        return;
+                    }
+
+                    let value: serde_json::Value =
+                        serde_json::from_str(&data).map_err(|e| OpenAIError::Other(e.to_string()))?;
+
+                    let usage = value
+                        .get("usage")
+                        .and_then(|u| if u.is_null() { None } else { Some(u) })
+                        .and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok());
+
+                    let choices = value
+                        .get("choices")
+                        .and_then(|c| c.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    if choices.is_empty() {
+                        if let Some(usage) = usage
+                            && !done_emitted
+                        {
+                            done_emitted = true;
+                            yield ChatStreamEvent::Done { finish_reason: None, usage: Some(usage) };
+                        }
+                        continue;
+                    }
+
+                    for choice in choices {
+                        let finish_reason = choice
+                            .get("finish_reason")
+                            .and_then(|r| r.as_str())
+                            .map(|s| s.to_string());
+
+                        if let Some(delta) = choice.get("delta") {
+                            if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                                && !content.is_empty()
+                            {
+                                yield ChatStreamEvent::Content(content.to_string());
+                            }
+
+                            if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                                for call in tool_calls {
+                                    let index = call
+                                        .get("index")
+                                        .and_then(|i| i.as_u64())
+                                        .unwrap_or(0) as usize;
+                                    let id = call.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    let type_name = call.get("type").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    let function = call.get("function");
+                                    let name = function
+                                        .and_then(|f| f.get("name"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
+                                    let arguments = function
+                                        .and_then(|f| f.get("arguments"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
+
+                                    yield ChatStreamEvent::ToolCallDelta {
+                                        index,
+                                        id,
+                                        type_name,
+                                        name,
+                                        arguments,
+                                    };
+                                }
+                            }
+                        }
+
+                        if let Some(finish_reason) = finish_reason
+                            && !done_emitted
+                        {
+                            done_emitted = true;
+                            yield ChatStreamEvent::Done { finish_reason: Some(finish_reason), usage: usage.clone() };
+                        }
+                    }
+                }
+            }
+
+            if !done_emitted {
+                yield ChatStreamEvent::Done { finish_reason: None, usage: None };
+            }
+        };
+
+        Ok(Box::pin(stream))
     }
+}
+
+fn split_sse_event(buffer: &str) -> Option<(String, String)> {
+    let idx = buffer.find("\n\n")?;
+    let (event, rest) = buffer.split_at(idx);
+    let rest = rest.get(2..).unwrap_or("").to_string();
+    Some((event.to_string(), rest))
+}
+
+fn extract_sse_data(event: &str) -> String {
+    let mut out = String::new();
+    for line in event.lines() {
+        let line = line.trim_end_matches('\r');
+        if let Some(rest) = line.strip_prefix("data:") {
+            let data = rest.trim_start();
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(data);
+        }
+    }
+    out
 }
 
 pub struct ChatOpenAIBuilder {

@@ -16,6 +16,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 downcast-rs = "2.0.1"
 schemars = { version = "0.8", features = ["derive"] }
 im = "15.1.0"
+async-stream = "0.3.6"
+futures-util = "0.3.31"
 
 
 [profile.dev]

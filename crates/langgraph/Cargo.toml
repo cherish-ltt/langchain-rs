@@ -8,11 +8,17 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 downcast-rs = { workspace = true }
 variadics_please = "1.1"
+async-stream = { workspace = true }
 
 langgraph_macro = { path = "./macro" }
 
-[dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+[dependencies.tokio]
+version = "1"
+features = ["macros", "rt", "sync"]
+
+[dependencies.tokio-stream]
+version = "0.1"
+features = ["sync"]
 
 
 [lints.rust]

@@ -9,6 +9,7 @@
         "langgraph",
         "logprobs",
         "reqwest",
+        "schemars",
         "serde",
         "thiserror"
     ],

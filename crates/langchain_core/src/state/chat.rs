@@ -68,7 +68,23 @@ pub struct ChatCompletion {
     pub usage: Usage,
 }
 
-pub type ChatStream<E> = Pin<Box<dyn Stream<Item = Result<Message, E>> + Send>>;
+#[derive(Debug, Clone)]
+pub enum ChatStreamEvent {
+    Content(String),
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        type_name: Option<String>,
+        name: Option<String>,
+        arguments: Option<String>,
+    },
+    Done {
+        finish_reason: Option<String>,
+        usage: Option<Usage>,
+    },
+}
+
+pub type ChatStream<E> = Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, E>> + Send>>;
 
 #[async_trait]
 pub trait ChatModel: Send + Sync {
@@ -80,5 +96,9 @@ pub trait ChatModel: Send + Sync {
         tools: Vec<ToolSpec>,
     ) -> Result<ChatCompletion, Self::Error>;
 
-    async fn stream(&self, messages: Vec<Message>) -> Result<ChatStream<Self::Error>, Self::Error>;
+    async fn stream(
+        &self,
+        messages: Vec<Message>,
+        tools: Vec<ToolSpec>,
+    ) -> Result<ChatStream<Self::Error>, Self::Error>;
 }

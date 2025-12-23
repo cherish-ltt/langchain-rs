@@ -1,11 +1,25 @@
 use std::collections::HashMap;
 
+use async_trait::async_trait;
+use tokio::sync::mpsc;
+
 use crate::{
     edge::BranchKind,
     graph::{Graph, GraphStepError},
     label::{GraphLabel, InternedGraphLabel},
-    node::Node,
+    node::{EventSink, Node},
 };
+
+struct ChannelEventSink<Ev> {
+    sender: mpsc::Sender<Ev>,
+}
+
+#[async_trait]
+impl<Ev: Send> EventSink<Ev> for ChannelEventSink<Ev> {
+    async fn emit(&mut self, event: Ev) {
+        let _ = self.sender.send(event).await;
+    }
+}
 
 pub struct StateGraph<S, E, B: BranchKind> {
     pub graph: Graph<S, S, E, B>,
