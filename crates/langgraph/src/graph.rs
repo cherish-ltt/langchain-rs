@@ -411,7 +411,6 @@ mod tests {
         assert!(first.is_ok());
 
         let second = graph.try_add_node_edge(TestLabel::A, TestLabel::B);
-        let b_label = TestLabel::B.intern();
         assert!(second.is_err());
     }
 
