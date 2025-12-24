@@ -1,16 +1,16 @@
 use crate::{
     edge::BranchKind,
-    graph::{Graph, GraphStepError},
+    graph::{Graph, GraphError},
     label::InternedGraphLabel,
 };
 use std::fmt::Debug;
 
-pub struct Executor<'g, I, O, E, B: BranchKind, Ev: Debug = ()> {
+pub struct Executor<'g, I, O, E: std::error::Error, B: BranchKind, Ev: Debug = ()> {
     pub graph: &'g Graph<I, O, E, B, Ev>,
     pub current: InternedGraphLabel,
 }
 
-impl<'g, I, O, E, B: BranchKind, Ev: Debug> Executor<'g, I, O, E, B, Ev> {
+impl<'g, I, O, E: std::error::Error, B: BranchKind, Ev: Debug> Executor<'g, I, O, E, B, Ev> {
     pub fn new(graph: &'g Graph<I, O, E, B, Ev>, start: InternedGraphLabel) -> Self {
         Self {
             graph,
@@ -19,10 +19,7 @@ impl<'g, I, O, E, B: BranchKind, Ev: Debug> Executor<'g, I, O, E, B, Ev> {
     }
 
     /// 执行一步（使用 Sync 模式）
-    pub async fn step(
-        &mut self,
-        input: &I,
-    ) -> Result<(O, Vec<InternedGraphLabel>), GraphStepError<E>>
+    pub async fn step(&mut self, input: &I) -> Result<(O, Vec<InternedGraphLabel>), GraphError<E>>
     where
         I: Send + Sync + 'static,
         O: Send + Sync + 'static,
@@ -41,7 +38,7 @@ impl<'g, I, O, E, B: BranchKind, Ev: Debug> Executor<'g, I, O, E, B, Ev> {
         &mut self,
         input: &I,
         max_steps: usize,
-    ) -> Result<Vec<(O, Vec<InternedGraphLabel>)>, GraphStepError<E>>
+    ) -> Result<Vec<(O, Vec<InternedGraphLabel>)>, GraphError<E>>
     where
         I: Send + Sync + 'static,
         O: Send + Sync + 'static,

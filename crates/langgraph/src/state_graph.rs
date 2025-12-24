@@ -1,7 +1,7 @@
 use crate::{
     edge::BranchKind,
     event::GraphEvent,
-    graph::{Graph, GraphStepError},
+    graph::{Graph, GraphError},
     label::{GraphLabel, InternedGraphLabel},
     node::{EventStream, Node},
 };
@@ -11,7 +11,7 @@ use std::fmt::Debug;
 /// StateGraph 带 Ev 泛型
 /// Ev = (): 不支持流式事件
 /// Ev = ChatStreamEvent: 支持 ChatStreamEvent 事件
-pub struct StateGraph<S, E, B: BranchKind, Ev: Debug = ()> {
+pub struct StateGraph<S, E: std::error::Error, B: BranchKind, Ev: Debug = ()> {
     pub graph: Graph<S, S, E, B, Ev>,
     pub entry: InternedGraphLabel,
 }
@@ -29,7 +29,7 @@ pub enum RunStrategy {
     Parallel,
 }
 
-impl<S, E, B: BranchKind, Ev: Debug> StateGraph<S, E, B, Ev> {
+impl<S, E: std::error::Error, B: BranchKind, Ev: Debug> StateGraph<S, E, B, Ev> {
     /// 从入口节点创建 StateGraph
     pub fn from_entry(entry: impl GraphLabel) -> Self {
         Self {
@@ -72,7 +72,7 @@ impl<S, E, B: BranchKind, Ev: Debug> StateGraph<S, E, B, Ev> {
     }
 }
 
-impl<S, E, B: BranchKind, Ev: Debug> StateGraph<S, E, B, Ev>
+impl<S, E: std::error::Error, B: BranchKind, Ev: Debug> StateGraph<S, E, B, Ev>
 where
     S: Send + Sync + Clone + 'static,
     E: Send + Sync + std::fmt::Debug + 'static,
@@ -84,7 +84,7 @@ where
         mut state: S,
         max_steps: usize,
         strategy: RunStrategy,
-    ) -> Result<(S, InternedGraphLabel), GraphStepError<E>> {
+    ) -> Result<(S, InternedGraphLabel), GraphError<E>> {
         let mut current = self.entry;
 
         for _ in 0..max_steps {
@@ -279,7 +279,7 @@ where
         &self,
         mut state: S,
         max_steps: usize,
-    ) -> Result<(S, InternedGraphLabel), GraphStepError<E>> {
+    ) -> Result<(S, InternedGraphLabel), GraphError<E>> {
         let mut current = self.entry;
 
         for _ in 0..max_steps {
@@ -298,13 +298,13 @@ where
 }
 
 /// StateGraph 运行器（用于逐步执行）
-pub struct StateGraphRunner<'g, S, E, B: BranchKind, Ev: Debug> {
+pub struct StateGraphRunner<'g, S, E: std::error::Error, B: BranchKind, Ev: Debug> {
     pub state_graph: &'g StateGraph<S, E, B, Ev>,
     pub current: InternedGraphLabel,
     pub state: S,
 }
 
-impl<'g, S, E, B: BranchKind, Ev: Debug> StateGraphRunner<'g, S, E, B, Ev> {
+impl<'g, S, E: std::error::Error, B: BranchKind, Ev: Debug> StateGraphRunner<'g, S, E, B, Ev> {
     /// 创建新的运行器
     pub fn new(state_graph: &'g StateGraph<S, E, B, Ev>, initial_state: S) -> Self {
         Self {
@@ -315,7 +315,7 @@ impl<'g, S, E, B: BranchKind, Ev: Debug> StateGraphRunner<'g, S, E, B, Ev> {
     }
 
     /// 执行一步（使用 Sync 模式）
-    pub async fn step(&mut self) -> Result<Vec<InternedGraphLabel>, GraphStepError<E>>
+    pub async fn step(&mut self) -> Result<Vec<InternedGraphLabel>, GraphError<E>>
     where
         S: Send + Sync + 'static,
         E: Send + Sync + 'static,

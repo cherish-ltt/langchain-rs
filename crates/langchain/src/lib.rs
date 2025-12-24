@@ -8,7 +8,7 @@ use langchain_core::{
     state::{ChatCompletion, ChatModel, ChatStreamEvent, MessagesState, RegisteredTool, ToolFn},
 };
 use langgraph::{
-    graph::{GraphError, GraphStepError},
+    graph::GraphError,
     label::{BaseGraphLabel, GraphLabel},
     state_graph::RunStrategy,
 };
@@ -39,18 +39,18 @@ where
 }
 
 #[async_trait]
-impl<M, LE> Node<MessagesState, MessagesState, ReActAgentError, ChatStreamEvent> for LlmNode<M, LE>
+impl<M, LE> Node<MessagesState, MessagesState, AgentError, ChatStreamEvent> for LlmNode<M, LE>
 where
     M: ChatModel<Error = LE> + Send + Sync + 'static,
     LE: Error + Send + Sync + 'static,
 {
-    async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, ReActAgentError> {
+    async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, AgentError> {
         let mut next = input.clone();
         let completion: ChatCompletion = self
             .model
             .invoke(next.messages.iter().cloned().collect(), self.tools.clone())
             .await
-            .map_err(|e| ReActAgentError::Model(Box::new(e)))?;
+            .map_err(|e| AgentError::Model(Box::new(e)))?;
         tracing::debug!("LLM completion: {:?}", completion);
         next.extend_messages(completion.messages);
         next.increment_llm_calls();
@@ -61,13 +61,13 @@ where
         &self,
         input: &MessagesState,
         sink: &mut dyn EventSink<ChatStreamEvent>,
-    ) -> Result<MessagesState, ReActAgentError> {
+    ) -> Result<MessagesState, AgentError> {
         let mut next = input.clone();
         let mut completion_stream = self
             .model
             .stream(next.messages.iter().cloned().collect(), self.tools.clone())
             .await
-            .map_err(|e| ReActAgentError::Model(Box::new(e)))?;
+            .map_err(|e| AgentError::Model(Box::new(e)))?;
 
         let mut content = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -75,7 +75,7 @@ where
         let mut raw_args = String::new();
 
         while let Some(event) = completion_stream.next().await {
-            let event = event.map_err(|e| ReActAgentError::Model(Box::new(e)))?;
+            let event = event.map_err(|e| AgentError::Model(Box::new(e)))?;
             sink.emit(event.clone()).await;
 
             match event {
@@ -186,11 +186,11 @@ where
 }
 
 #[async_trait]
-impl<E> Node<MessagesState, MessagesState, ReActAgentError, ChatStreamEvent> for ToolNode<E>
+impl<E> Node<MessagesState, MessagesState, AgentError, ChatStreamEvent> for ToolNode<E>
 where
     E: Error + Send + Sync + 'static,
 {
-    async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, ReActAgentError> {
+    async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, AgentError> {
         let mut next = input.clone();
         if let Some(calls) = input.last_tool_calls() {
             let mut futures = Vec::new();
@@ -205,7 +205,7 @@ where
             }
             let results: Vec<Value> = try_join_all(futures)
                 .await
-                .map_err(|e| ReActAgentError::Tool(Box::new(e)))?;
+                .map_err(|e| AgentError::Tool(Box::new(e)))?;
             for (id, value) in ids.into_iter().zip(results.into_iter()) {
                 tracing::debug!("Tool call result: {}", value);
                 next.push_message(Message::tool(value.to_string(), id));
@@ -218,7 +218,7 @@ where
         &self,
         input: &MessagesState,
         _sink: &mut dyn EventSink<ChatStreamEvent>,
-    ) -> Result<MessagesState, ReActAgentError> {
+    ) -> Result<MessagesState, AgentError> {
         self.run_sync(input).await
     }
 }
@@ -238,26 +238,29 @@ enum ReactAgentBranch {
 pub use langchain_core::ToolError;
 
 #[derive(Debug, Error)]
-pub enum ReActAgentError {
-    #[error("model error")]
+pub enum AgentError {
+    /// 模型执行时发生错误
+    #[error("model error: {0}")]
     Model(#[source] Box<dyn Error + Send + Sync>),
-    #[error("tool error")]
+    /// 工具执行时发生错误
+    #[error("tool error: {0}")]
     Tool(#[source] Box<dyn Error + Send + Sync>),
-    #[error(transparent)]
-    Graph(#[from] GraphError),
+    /// 用户通常不需要在代码中处理这些系统错误，只需记录日志
+    #[error("graph execution error: {0}")]
+    Graph(String),
 }
 
-impl From<GraphStepError<ReActAgentError>> for ReActAgentError {
-    fn from(value: GraphStepError<ReActAgentError>) -> Self {
+impl From<GraphError<AgentError>> for AgentError {
+    fn from(value: GraphError<AgentError>) -> Self {
         match value {
-            GraphStepError::Graph(e) => Self::Graph(e),
-            GraphStepError::Node(e) => e,
+            GraphError::NodeRunError(e) => e,
+            _ => Self::Graph(value.to_string()),
         }
     }
 }
 
 pub struct ReactAgent {
-    graph: StateGraph<MessagesState, ReActAgentError, ReactAgentBranch, ChatStreamEvent>,
+    graph: StateGraph<MessagesState, AgentError, ReactAgentBranch, ChatStreamEvent>,
     system_prompt: Option<String>,
 }
 
@@ -269,22 +272,18 @@ impl ReactAgent {
     {
         let (tool_specs, tools) = parse_tool(tools);
 
-        let mut graph: StateGraph<
-            MessagesState,
-            ReActAgentError,
-            ReactAgentBranch,
-            ChatStreamEvent,
-        > = StateGraph::from_entry(BaseGraphLabel::Start);
+        let mut graph: StateGraph<MessagesState, AgentError, ReactAgentBranch, ChatStreamEvent> =
+            StateGraph::from_entry(BaseGraphLabel::Start);
 
         graph.add_node(
             BaseGraphLabel::Start,
-            IdentityNode::<ReActAgentError> {
+            IdentityNode::<AgentError> {
                 _marker: PhantomData,
             },
         );
         graph.add_node(
             BaseGraphLabel::End,
-            IdentityNode::<ReActAgentError> {
+            IdentityNode::<AgentError> {
                 _marker: PhantomData,
             },
         );
@@ -316,7 +315,7 @@ impl ReactAgent {
         self
     }
 
-    pub async fn invoke(&self, message: Message) -> Result<MessagesState, ReActAgentError> {
+    pub async fn invoke(&self, message: Message) -> Result<MessagesState, AgentError> {
         let mut state = MessagesState::default();
         if let Some(system_prompt) = &self.system_prompt {
             state.push_message(Message::system(system_prompt.clone()));
@@ -333,7 +332,7 @@ impl ReactAgent {
     pub async fn stream(
         &self,
         message: Message,
-    ) -> Result<impl Stream<Item = ChatStreamEvent> + '_, ReActAgentError> {
+    ) -> Result<impl Stream<Item = ChatStreamEvent> + '_, AgentError> {
         let mut state = MessagesState::default();
         if let Some(system_prompt) = &self.system_prompt {
             state.push_message(Message::system(system_prompt.clone()));
@@ -465,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn llm_and_tool_nodes_work_in_state_graph() {
-        let mut sg: StateGraph<MessagesState, ReActAgentError, TestBranch, ChatStreamEvent> =
+        let mut sg: StateGraph<MessagesState, AgentError, TestBranch, ChatStreamEvent> =
             StateGraph::from_entry(TestLabel::Llm);
 
         let tool = test_tool_tool();

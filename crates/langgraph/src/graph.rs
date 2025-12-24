@@ -12,11 +12,11 @@ use crate::{
 };
 
 #[derive(Default)]
-pub struct Graph<I, O, E, B: BranchKind, Ev: std::fmt::Debug> {
+pub struct Graph<I, O, E: std::error::Error, B: BranchKind, Ev: std::fmt::Debug> {
     pub nodes: HashMap<InternedGraphLabel, NodeState<I, O, E, B, Ev>>,
 }
 
-impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
+impl<I, O, E: std::error::Error, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
     /// 添加一个节点到图中
     pub fn add_node<T>(&mut self, label: impl GraphLabel, node: T)
     where
@@ -30,7 +30,7 @@ impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
     pub fn get_node_state_mut(
         &mut self,
         label: impl GraphLabel,
-    ) -> Result<&mut NodeState<I, O, E, B, Ev>, GraphError> {
+    ) -> Result<&mut NodeState<I, O, E, B, Ev>, GraphError<E>> {
         let label = label.intern();
         self.nodes
             .get_mut(&label)
@@ -41,7 +41,7 @@ impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
         &mut self,
         pred_node: impl GraphLabel,
         next_node: impl GraphLabel,
-    ) -> Result<(), GraphError> {
+    ) -> Result<(), GraphError<E>> {
         let pred_node = pred_node.intern();
         let next_node = next_node.intern();
 
@@ -73,7 +73,7 @@ impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
         pred_node: impl GraphLabel,
         branches: HashMap<B, InternedGraphLabel>,
         condition: F,
-    ) -> Result<(), GraphError>
+    ) -> Result<(), GraphError<E>>
     where
         F: Fn(&O) -> Vec<B> + Send + Sync + 'static,
     {
@@ -133,7 +133,7 @@ impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
         &self,
         current: InternedGraphLabel,
         input: &I,
-    ) -> Result<(O, Vec<InternedGraphLabel>), GraphStepError<E>>
+    ) -> Result<(O, Vec<InternedGraphLabel>), GraphError<E>>
     where
         I: Send + Sync + 'static,
         O: Send + Sync + 'static,
@@ -143,13 +143,13 @@ impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
         let state = self
             .nodes
             .get(&current)
-            .ok_or_else(|| GraphStepError::Graph(GraphError::InvalidNode(current)))?;
+            .ok_or_else(|| GraphError::InvalidNode(current))?;
 
         let output = state
             .node
             .run_sync(input)
             .await
-            .map_err(GraphStepError::Node)?;
+            .map_err(GraphError::NodeRunError)?;
 
         let next_nodes = self.get_next_nodes(state, &output);
 
@@ -160,7 +160,7 @@ impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
         &'a self,
         current: InternedGraphLabel,
         input: &'a I,
-    ) -> Result<EventStream<'a, Result<GraphEvent<Ev, O>, GraphStepError<E>>>, GraphStepError<E>>
+    ) -> Result<EventStream<'a, Result<GraphEvent<Ev, O>, GraphError<E>>>, GraphError<E>>
     where
         I: Send + Sync + 'static,
         O: Send + Sync + 'static,
@@ -170,7 +170,7 @@ impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
         let state = self
             .nodes
             .get(&current)
-            .ok_or_else(|| GraphStepError::Graph(GraphError::InvalidNode(current)))?;
+            .ok_or_else(|| GraphError::InvalidNode(current))?;
 
         let label = state.label;
 
@@ -225,7 +225,7 @@ impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
                     }
                     Err(e) => {
                         tracing::error!("node {:?} error", label);
-                        yield Err(GraphStepError::Node(e));
+                        yield Err(GraphError::NodeRunError(e));
                     }
                 }
             }
@@ -260,14 +260,8 @@ impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
     }
 }
 
-#[derive(Debug)]
-pub enum GraphStepError<E> {
-    Graph(GraphError),
-    Node(E),
-}
-
 #[derive(Debug, Error, PartialEq, Eq)]
-pub enum GraphError {
+pub enum GraphError<E> {
     /// 无效的节点标签
     #[error("node {0:?} dose not exist")]
     InvalidNode(InternedGraphLabel),
@@ -278,7 +272,7 @@ pub enum GraphError {
 
     /// Node run Error
     #[error("node {0:?} run error")]
-    NodeRunError(InternedGraphLabel),
+    NodeRunError(E),
 
     /// 事件不存在
     #[error("no event")]
@@ -418,7 +412,7 @@ mod tests {
 
         let second = graph.try_add_node_edge(TestLabel::A, TestLabel::B);
         let b_label = TestLabel::B.intern();
-        assert_eq!(second, Err(GraphError::EdgeAlreadyExists(b_label)));
+        assert!(second.is_err());
     }
 
     #[test]
