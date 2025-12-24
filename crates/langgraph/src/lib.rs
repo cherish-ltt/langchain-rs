@@ -1,6 +1,8 @@
 #![cfg_attr(any(docsrs, docsrs_dep), feature(rustdoc_internals))]
 
 pub mod edge;
+pub mod event;
+pub mod execution_mode;
 pub mod executor;
 pub mod graph;
 mod intern;

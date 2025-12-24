@@ -1,23 +1,26 @@
+use async_stream::stream;
 use std::collections::HashMap;
-
+use std::fmt::Debug;
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 use crate::{
     edge::{BranchKind, Edge, EdgeCondition},
+    event::GraphEvent,
     label::{GraphLabel, InternedGraphLabel, IntoGraphNodeArray},
-    node::{Node, NodeState},
+    node::{EventStream, Node, NodeState},
 };
 
 #[derive(Default)]
-pub struct Graph<I, O, E, B: BranchKind> {
-    pub nodes: HashMap<InternedGraphLabel, NodeState<I, O, E, B>>,
+pub struct Graph<I, O, E, B: BranchKind, Ev: std::fmt::Debug> {
+    pub nodes: HashMap<InternedGraphLabel, NodeState<I, O, E, B, Ev>>,
 }
 
-impl<I, O, E, B: BranchKind> Graph<I, O, E, B> {
+impl<I, O, E, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
     /// 添加一个节点到图中
     pub fn add_node<T>(&mut self, label: impl GraphLabel, node: T)
     where
-        T: Node<I, O, E>,
+        T: Node<I, O, E, Ev>,
     {
         let label = label.intern();
         let node_state = NodeState::new(label, node);
@@ -27,7 +30,7 @@ impl<I, O, E, B: BranchKind> Graph<I, O, E, B> {
     pub fn get_node_state_mut(
         &mut self,
         label: impl GraphLabel,
-    ) -> Result<&mut NodeState<I, O, E, B>, GraphError> {
+    ) -> Result<&mut NodeState<I, O, E, B, Ev>, GraphError> {
         let label = label.intern();
         self.nodes
             .get_mut(&label)
@@ -125,6 +128,136 @@ impl<I, O, E, B: BranchKind> Graph<I, O, E, B> {
         self.try_add_node_condition_edge(pred_node, branches, condition)
             .unwrap();
     }
+
+    pub async fn run_once(
+        &self,
+        current: InternedGraphLabel,
+        input: &I,
+    ) -> Result<(O, Vec<InternedGraphLabel>), GraphStepError<E>>
+    where
+        I: Send + Sync + 'static,
+        O: Send + Sync + 'static,
+        E: Send + Sync + 'static,
+        Ev: Send + Sync + 'static,
+    {
+        let state = self
+            .nodes
+            .get(&current)
+            .ok_or_else(|| GraphStepError::Graph(GraphError::InvalidNode(current)))?;
+
+        let output = state
+            .node
+            .run_sync(input)
+            .await
+            .map_err(GraphStepError::Node)?;
+
+        let next_nodes = self.get_next_nodes(state, &output);
+
+        Ok((output, next_nodes))
+    }
+
+    pub async fn run_stream<'a>(
+        &'a self,
+        current: InternedGraphLabel,
+        input: &'a I,
+    ) -> Result<EventStream<'a, Result<GraphEvent<Ev, O>, GraphStepError<E>>>, GraphStepError<E>>
+    where
+        I: Send + Sync + 'static,
+        O: Send + Sync + 'static,
+        E: Send + Sync + 'static,
+        Ev: Send + 'static,
+    {
+        let state = self
+            .nodes
+            .get(&current)
+            .ok_or_else(|| GraphStepError::Graph(GraphError::InvalidNode(current)))?;
+
+        let label = state.label;
+
+        struct ChannelSink<Ev> {
+            tx: mpsc::Sender<Ev>,
+        }
+
+        #[async_trait::async_trait]
+        impl<Ev: Send> crate::node::EventSink<Ev> for ChannelSink<Ev> {
+            async fn emit(&mut self, event: Ev) {
+                let _ = self.tx.send(event).await;
+            }
+        }
+
+        let stream = stream! {
+            yield Ok(GraphEvent::node_start(label));
+
+            let (tx, mut rx) = mpsc::channel(100);
+            let mut sink = ChannelSink { tx };
+
+            let mut run_future = state.node.run_stream(input, &mut sink);
+
+            let output_result;
+
+            loop {
+                tokio::select! {
+                    result = &mut run_future => {
+                        output_result = Some(result);
+                        break;
+                    }
+                    Some(ev) = rx.recv() => {
+                        yield Ok(GraphEvent::streaming(label, ev));
+                    }
+                }
+            }
+
+            // Drop future and sink to close the channel
+            drop(run_future);
+            drop(sink);
+
+            // Drain remaining events
+            while let Some(ev) = rx.recv().await {
+                yield Ok(GraphEvent::streaming(label, ev));
+            }
+
+            if let Some(result) = output_result {
+                match result {
+                    Ok(output) => {
+                        tracing::debug!("node {:?} output", label);
+                        let next_nodes = self.get_next_nodes(state, &output);
+                        yield Ok(GraphEvent::node_end(label, output, next_nodes));
+                    }
+                    Err(e) => {
+                        tracing::error!("node {:?} error", label);
+                        yield Err(GraphStepError::Node(e));
+                    }
+                }
+            }
+        };
+
+        Ok(EventStream::new(stream))
+    }
+
+    fn get_next_nodes(
+        &self,
+        state: &NodeState<I, O, E, B, Ev>,
+        output: &O,
+    ) -> Vec<InternedGraphLabel> {
+        let mut next_nodes = Vec::new();
+        for edge in &state.edges {
+            match edge {
+                Edge::NodeEdge(label) => next_nodes.push(*label),
+                Edge::ConditionalEdge {
+                    next_nodes: branches,
+                    condition,
+                } => {
+                    let branches_to_take = (condition)(&output);
+                    for branch in branches_to_take {
+                        if let Some(label) = branches.get(&branch) {
+                            next_nodes.push(*label);
+                        }
+                    }
+                }
+            }
+        }
+        next_nodes
+    }
 }
 
 #[derive(Debug)]
@@ -142,13 +275,21 @@ pub enum GraphError {
     /// 边已存在
     #[error("edge {0:?} already exists")]
     EdgeAlreadyExists(InternedGraphLabel),
+
+    /// Node run Error
+    #[error("node {0:?} run error")]
+    NodeRunError(InternedGraphLabel),
+
+    /// 事件不存在
+    #[error("no event")]
+    NoEvent,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::label::GraphLabel;
-    use crate::node::NodeError;
+    use crate::node::{EventSink, Node, NodeError};
     use async_trait::async_trait;
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash, GraphLabel)]
@@ -162,8 +303,16 @@ mod tests {
     struct IncNode;
 
     #[async_trait]
-    impl Node<i32, i32, NodeError> for IncNode {
-        async fn run(&self, input: &i32) -> Result<i32, NodeError> {
+    impl Node<i32, i32, NodeError, ()> for IncNode {
+        async fn run_sync(&self, input: &i32) -> Result<i32, NodeError> {
+            Ok(*input + 1)
+        }
+
+        async fn run_stream(
+            &self,
+            input: &i32,
+            _sink: &mut dyn EventSink<()>,
+        ) -> Result<i32, NodeError> {
             Ok(*input + 1)
         }
     }
@@ -175,9 +324,31 @@ mod tests {
         Alt,
     }
 
+    #[derive(Debug)]
+    struct StreamNode;
+
+    #[async_trait]
+    impl Node<i32, i32, NodeError, i32> for StreamNode {
+        async fn run_sync(&self, input: &i32) -> Result<i32, NodeError> {
+            Ok(*input + 1)
+        }
+
+        async fn run_stream(
+            &self,
+            input: &i32,
+            sink: &mut dyn EventSink<i32>,
+        ) -> Result<i32, NodeError> {
+            let value = *input + 1;
+            sink.emit(1).await;
+            sink.emit(2).await;
+            sink.emit(3).await;
+            Ok(value)
+        }
+    }
+
     #[test]
     fn add_node_and_edge_should_link_successor() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -200,7 +371,7 @@ mod tests {
 
     #[test]
     fn add_node_edges_should_link_all_successors_in_chain() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -235,7 +406,7 @@ mod tests {
 
     #[test]
     fn duplicate_edge_returns_error() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -252,7 +423,7 @@ mod tests {
 
     #[test]
     fn add_node_edges_with_single_node_creates_no_edges() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -267,7 +438,7 @@ mod tests {
 
     #[test]
     fn add_condition_edge_stores_branches_and_condition() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -310,8 +481,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_stream_emits_events_and_collects_successors() {
+        use futures::StreamExt;
+
+        let mut graph: Graph<i32, i32, NodeError, TestBranch, i32> = Graph {
+            nodes: HashMap::new(),
+        };
+
+        graph.add_node(TestLabel::A, StreamNode);
+        graph.add_node(TestLabel::B, StreamNode);
+        graph.add_node_edge(TestLabel::A, TestLabel::B);
+
+        let a_label = TestLabel::A.intern();
+        let mut stream = graph.run_stream(a_label, &0).await.unwrap();
+
+        let mut events = Vec::new();
+        let mut next = Vec::new();
+        while let Some(event_result) = stream.next().await {
+            let event = event_result.unwrap();
+            if let GraphEvent::NodeEnd { next_nodes, .. } = &event {
+                next = next_nodes.clone();
+            }
+            events.push(event);
+        }
+
+        assert_eq!(next, vec![TestLabel::B.intern()]);
+        assert!(!events.is_empty());
+
+        match &events[0] {
+            GraphEvent::NodeStart { label } => assert_eq!(*label, a_label),
+            _ => panic!("expected first event to be NodeStart"),
+        }
+
+        let streaming_values: Vec<i32> = events
+            .iter()
+            .filter_map(|e| match e {
+                GraphEvent::Streaming { event, .. } => Some(*event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streaming_values, vec![1, 2, 3]);
+
+        match events.last().unwrap() {
+            GraphEvent::NodeEnd {
+                label,
+                output,
+                next_nodes,
+            } => {
+                assert_eq!(*label, a_label);
+                assert_eq!(*output, 1);
+                assert_eq!(*next_nodes, vec![TestLabel::B.intern()]);
+            }
+            _ => panic!("expected last event to be NodeEnd"),
+        }
+    }
+
+    #[tokio::test]
     async fn run_once_executes_and_collects_successors() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
+            nodes: HashMap::new(),
+        };
+
+        graph.add_node(TestLabel::A, IncNode);
+        graph.add_node(TestLabel::B, IncNode);
+
+        graph.add_node_edge(TestLabel::A, TestLabel::B);
+
+        let a_label = TestLabel::A.intern();
+        let (output, next) = graph.run_once(a_label, &0).await.unwrap();
+
+        assert_eq!(output, 1);
+        assert_eq!(next, vec![TestLabel::B.intern()]);
+    }
+
+    #[tokio::test]
+    async fn run_once_with_mode_sync_executes_correctly() {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
             nodes: HashMap::new(),
         };
 

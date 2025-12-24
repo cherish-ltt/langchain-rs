@@ -1,23 +1,24 @@
 use crate::{
-    edge::{BranchKind, Edge},
-    graph::{Graph, GraphError, GraphStepError},
+    edge::BranchKind,
+    graph::{Graph, GraphStepError},
     label::InternedGraphLabel,
-    node::EventSink,
 };
+use std::fmt::Debug;
 
-pub struct Executor<'g, I, O, E, B: BranchKind> {
-    pub graph: &'g Graph<I, O, E, B>,
+pub struct Executor<'g, I, O, E, B: BranchKind, Ev: Debug = ()> {
+    pub graph: &'g Graph<I, O, E, B, Ev>,
     pub current: InternedGraphLabel,
 }
 
-impl<'g, I, O, E, B: BranchKind> Executor<'g, I, O, E, B> {
-    pub fn new(graph: &'g Graph<I, O, E, B>, start: InternedGraphLabel) -> Self {
+impl<'g, I, O, E, B: BranchKind, Ev: Debug> Executor<'g, I, O, E, B, Ev> {
+    pub fn new(graph: &'g Graph<I, O, E, B, Ev>, start: InternedGraphLabel) -> Self {
         Self {
             graph,
             current: start,
         }
     }
 
+    /// 执行一步（使用 Sync 模式）
     pub async fn step(
         &mut self,
         input: &I,
@@ -26,6 +27,7 @@ impl<'g, I, O, E, B: BranchKind> Executor<'g, I, O, E, B> {
         I: Send + Sync + 'static,
         O: Send + Sync + 'static,
         E: Send + Sync + 'static,
+        Ev: Send + Sync + 'static,
     {
         let (output, next) = self.graph.run_once(self.current, input).await?;
         if next.len() == 1 {
@@ -34,6 +36,7 @@ impl<'g, I, O, E, B: BranchKind> Executor<'g, I, O, E, B> {
         Ok((output, next))
     }
 
+    /// 执行直到卡住（使用 Sync 模式）
     pub async fn run_until_stuck(
         &mut self,
         input: &I,
@@ -43,6 +46,7 @@ impl<'g, I, O, E, B: BranchKind> Executor<'g, I, O, E, B> {
         I: Send + Sync + 'static,
         O: Send + Sync + 'static,
         E: Send + Sync + 'static,
+        Ev: Send + Sync + 'static,
     {
         let mut steps = Vec::new();
 
@@ -59,64 +63,6 @@ impl<'g, I, O, E, B: BranchKind> Executor<'g, I, O, E, B> {
     }
 }
 
-impl<I, O, E, B: BranchKind> Graph<I, O, E, B> {
-    pub async fn run_once(
-        &self,
-        current: InternedGraphLabel,
-        input: &I,
-    ) -> Result<(O, Vec<InternedGraphLabel>), GraphStepError<E>>
-    where
-        I: Send + Sync + 'static,
-        O: Send + Sync + 'static,
-        E: Send + Sync + 'static,
-    {
-        let state = self
-            .nodes
-            .get(&current)
-            .ok_or_else(|| GraphStepError::Graph(GraphError::InvalidNode(current)))?;
-
-        let output = state.node.run(input).await.map_err(GraphStepError::Node)?;
-
-        let mut next_nodes = Vec::new();
-
-        for edge in &state.edges {
-            match edge {
-                Edge::NodeEdge(label) => next_nodes.push(*label),
-                Edge::ConditionalEdge {
-                    next_nodes: branches,
-                    condition,
-                } => {
-                    let branches_to_take = (condition)(&output);
-                    for branch in branches_to_take {
-                        if let Some(label) = branches.get(&branch) {
-                            next_nodes.push(*label);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok((output, next_nodes))
-    }
-}
-
-struct NoopSink<Ev> {
-    _marker: std::marker::PhantomData<Ev>,
-}
-
-impl<Ev> Default for NoopSink<Ev> {
-    fn default() -> Self {
-        Self {
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl<Ev: Send> EventSink<Ev> for NoopSink<Ev> {
-    async fn emit(&mut self, _event: Ev) {}
-}
-
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
@@ -127,7 +73,7 @@ mod test {
         executor::Executor,
         graph::Graph,
         label::GraphLabel,
-        node::{Node, NodeError},
+        node::{EventSink, Node, NodeError},
     };
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash, GraphLabel)]
@@ -140,8 +86,16 @@ mod test {
     struct IncNode;
 
     #[async_trait]
-    impl Node<i32, i32, NodeError> for IncNode {
-        async fn run(&self, input: &i32) -> Result<i32, NodeError> {
+    impl Node<i32, i32, NodeError, ()> for IncNode {
+        async fn run_sync(&self, input: &i32) -> Result<i32, NodeError> {
+            Ok(*input + 1)
+        }
+
+        async fn run_stream(
+            &self,
+            input: &i32,
+            _sink: &mut dyn EventSink<()>,
+        ) -> Result<i32, NodeError> {
             Ok(*input + 1)
         }
     }
@@ -156,7 +110,7 @@ mod test {
 
     #[tokio::test]
     async fn executor_drives_linear_flow() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -181,7 +135,7 @@ mod test {
 
     #[tokio::test]
     async fn run_until_stuck_executes_multiple_steps() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
             nodes: HashMap::new(),
         };
 

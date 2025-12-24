@@ -9,7 +9,8 @@ async-trait = { workspace = true }
 downcast-rs = { workspace = true }
 variadics_please = "1.1"
 async-stream = { workspace = true }
-
+futures = "0.3"
+tracing = { workspace = true }
 langgraph_macro = { path = "./macro" }
 
 [dependencies.tokio]

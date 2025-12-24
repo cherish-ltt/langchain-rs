@@ -725,10 +725,12 @@ dependencies = [
  "async-stream",
  "async-trait",
  "downcast-rs",
+ "futures",
  "langgraph_macro",
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tracing",
  "variadics_please",
 ]
 

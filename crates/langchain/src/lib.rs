@@ -1,18 +1,21 @@
-use std::{collections::HashMap, error::Error, marker::PhantomData};
+use std::{collections::HashMap, error::Error, marker::PhantomData, mem};
 
 use async_trait::async_trait;
-use futures::future::try_join_all;
+use futures::{Stream, StreamExt, future::try_join_all};
 use langchain_core::{
-    message::Message,
+    message::{FunctionCall, Message, ToolCall},
     request::ToolSpec,
-    state::{ChatCompletion, ChatModel, MessagesState, RegisteredTool, ToolFn},
+    state::{ChatCompletion, ChatModel, ChatStreamEvent, MessagesState, RegisteredTool, ToolFn},
 };
 use langgraph::{
     graph::{GraphError, GraphStepError},
     label::{BaseGraphLabel, GraphLabel},
     state_graph::RunStrategy,
 };
-use langgraph::{node::Node, state_graph::StateGraph};
+use langgraph::{
+    node::{EventSink, Node},
+    state_graph::StateGraph,
+};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -36,12 +39,12 @@ where
 }
 
 #[async_trait]
-impl<M, LE> Node<MessagesState, MessagesState, ReActAgentError> for LlmNode<M, LE>
+impl<M, LE> Node<MessagesState, MessagesState, ReActAgentError, ChatStreamEvent> for LlmNode<M, LE>
 where
     M: ChatModel<Error = LE> + Send + Sync + 'static,
     LE: Error + Send + Sync + 'static,
 {
-    async fn run(&self, input: &MessagesState) -> Result<MessagesState, ReActAgentError> {
+    async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, ReActAgentError> {
         let mut next = input.clone();
         let completion: ChatCompletion = self
             .model
@@ -50,6 +53,95 @@ where
             .map_err(|e| ReActAgentError::Model(Box::new(e)))?;
         tracing::debug!("LLM completion: {:?}", completion);
         next.extend_messages(completion.messages);
+        next.increment_llm_calls();
+        Ok(next)
+    }
+
+    async fn run_stream(
+        &self,
+        input: &MessagesState,
+        sink: &mut dyn EventSink<ChatStreamEvent>,
+    ) -> Result<MessagesState, ReActAgentError> {
+        let mut next = input.clone();
+        let mut completion_stream = self
+            .model
+            .stream(next.messages.iter().cloned().collect(), self.tools.clone())
+            .await
+            .map_err(|e| ReActAgentError::Model(Box::new(e)))?;
+
+        let mut content = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+
+        let mut raw_args = String::new();
+
+        while let Some(event) = completion_stream.next().await {
+            let event = event.map_err(|e| ReActAgentError::Model(Box::new(e)))?;
+            sink.emit(event.clone()).await;
+
+            match event {
+                ChatStreamEvent::Content(chunk) => {
+                    content.push_str(&chunk);
+                }
+                ChatStreamEvent::ToolCallDelta {
+                    index,
+                    id,
+                    type_name,
+                    name,
+                    arguments,
+                } => {
+                    if tool_calls.len() <= index {
+                        tool_calls.resize_with(index + 1, || ToolCall {
+                            id: String::new(),
+                            type_name: String::new(),
+                            function: FunctionCall {
+                                name: String::new(),
+                                arguments: serde_json::Value::Null,
+                            },
+                        });
+
+                        if index > 0 {
+                            // 此时上一个tool_call的arguments参数才是完整的
+                            let call = &mut tool_calls[index - 1];
+                            call.function.arguments =
+                                serde_json::Value::String(mem::take(&mut raw_args));
+                        }
+                    }
+
+                    let call = &mut tool_calls[index];
+
+                    if let Some(id) = id {
+                        call.id = id;
+                    }
+                    if let Some(tn) = type_name {
+                        call.type_name = tn;
+                    }
+                    if let Some(name) = name {
+                        call.function.name = name;
+                    }
+                    if let Some(args) = arguments {
+                        raw_args.push_str(&args);
+                    }
+                }
+                ChatStreamEvent::Done { .. } => {}
+            }
+        }
+
+        if !content.is_empty() || !tool_calls.is_empty() {
+            let assistant = Message::Assistant {
+                content,
+                tool_calls: if tool_calls.is_empty() {
+                    None
+                } else {
+                    // 最后一个tool_call的arguments参数需要在这里处理
+                    let len = tool_calls.len();
+                    tool_calls[len - 1].function.arguments = serde_json::Value::String(raw_args);
+                    Some(tool_calls)
+                },
+                name: None,
+            };
+            next.push_message(assistant);
+        }
+
         next.increment_llm_calls();
         Ok(next)
     }
@@ -76,21 +168,29 @@ struct IdentityNode<E> {
 }
 
 #[async_trait]
-impl<E> Node<MessagesState, MessagesState, E> for IdentityNode<E>
+impl<E> Node<MessagesState, MessagesState, E, ChatStreamEvent> for IdentityNode<E>
 where
     E: Send + Sync + 'static,
 {
-    async fn run(&self, input: &MessagesState) -> Result<MessagesState, E> {
+    async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, E> {
         Ok(input.clone())
+    }
+
+    async fn run_stream(
+        &self,
+        input: &MessagesState,
+        _sink: &mut dyn EventSink<ChatStreamEvent>,
+    ) -> Result<MessagesState, E> {
+        self.run_sync(input).await
     }
 }
 
 #[async_trait]
-impl<E> Node<MessagesState, MessagesState, ReActAgentError> for ToolNode<E>
+impl<E> Node<MessagesState, MessagesState, ReActAgentError, ChatStreamEvent> for ToolNode<E>
 where
     E: Error + Send + Sync + 'static,
 {
-    async fn run(&self, input: &MessagesState) -> Result<MessagesState, ReActAgentError> {
+    async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, ReActAgentError> {
         let mut next = input.clone();
         if let Some(calls) = input.last_tool_calls() {
             let mut futures = Vec::new();
@@ -99,6 +199,7 @@ where
             for call in calls {
                 if let Some(handler) = self.tools.get(call.function_name()) {
                     ids.push(call.id().to_string());
+                    tracing::debug!("Tool call: {:?}", call.function);
                     futures.push((handler)(call.arguments()));
                 }
             }
@@ -111,6 +212,14 @@ where
             }
         }
         Ok(next)
+    }
+
+    async fn run_stream(
+        &self,
+        input: &MessagesState,
+        _sink: &mut dyn EventSink<ChatStreamEvent>,
+    ) -> Result<MessagesState, ReActAgentError> {
+        self.run_sync(input).await
     }
 }
 
@@ -148,7 +257,7 @@ impl From<GraphStepError<ReActAgentError>> for ReActAgentError {
 }
 
 pub struct ReactAgent {
-    graph: StateGraph<MessagesState, ReActAgentError, ReactAgentBranch>,
+    graph: StateGraph<MessagesState, ReActAgentError, ReactAgentBranch, ChatStreamEvent>,
     system_prompt: Option<String>,
 }
 
@@ -160,8 +269,12 @@ impl ReactAgent {
     {
         let (tool_specs, tools) = parse_tool(tools);
 
-        let mut graph: StateGraph<MessagesState, ReActAgentError, ReactAgentBranch> =
-            StateGraph::from_entry(BaseGraphLabel::Start);
+        let mut graph: StateGraph<
+            MessagesState,
+            ReActAgentError,
+            ReactAgentBranch,
+            ChatStreamEvent,
+        > = StateGraph::from_entry(BaseGraphLabel::Start);
 
         graph.add_node(
             BaseGraphLabel::Start,
@@ -215,6 +328,23 @@ impl ReactAgent {
             .run(state, max_steps, RunStrategy::StopAtNonLinear)
             .await?;
         Ok(state)
+    }
+
+    pub async fn stream(
+        self,
+        message: Message,
+    ) -> Result<impl Stream<Item = ChatStreamEvent>, ReActAgentError> {
+        let mut state = MessagesState::default();
+        if let Some(system_prompt) = &self.system_prompt {
+            state.push_message(Message::system(system_prompt.clone()));
+        }
+        state.push_message(message);
+        let max_steps = 25;
+        let stream = self
+            .graph
+            .stream(state, max_steps, RunStrategy::StopAtNonLinear);
+
+        Ok(stream)
     }
 }
 
@@ -335,7 +465,7 @@ mod tests {
 
     #[tokio::test]
     async fn llm_and_tool_nodes_work_in_state_graph() {
-        let mut sg: StateGraph<MessagesState, ReActAgentError, TestBranch> =
+        let mut sg: StateGraph<MessagesState, ReActAgentError, TestBranch, ChatStreamEvent> =
             StateGraph::from_entry(TestLabel::Llm);
 
         let tool = test_tool_tool();
