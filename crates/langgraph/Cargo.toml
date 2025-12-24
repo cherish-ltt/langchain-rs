@@ -12,14 +12,7 @@ async-stream = { workspace = true }
 futures = "0.3"
 tracing = { workspace = true }
 langgraph_macro = { path = "./macro" }
-
-[dependencies.tokio]
-version = "1"
-features = ["macros", "rt", "sync"]
-
-[dependencies.tokio-stream]
-version = "0.1"
-features = ["sync"]
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
 
 
 [lints.rust]
