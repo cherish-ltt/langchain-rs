@@ -228,8 +228,8 @@ mod tests {
     #[test]
     fn registered_tool_from_typed_builds_schema() {
         let tool: RegisteredTool<TestError> = RegisteredTool::from_typed(
-            "add".to_string(),
-            "add numbers".to_string(),
+            "add".to_owned(),
+            "add numbers".to_owned(),
             |args: AddArgs| add(args),
         );
         assert_eq!(tool.function.name, "add");

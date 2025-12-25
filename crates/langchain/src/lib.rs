@@ -198,7 +198,7 @@ where
             tracing::debug!("Tool calls count: {}", calls.len());
             for call in calls {
                 if let Some(handler) = self.tools.get(call.function_name()) {
-                    ids.push(call.id().to_string());
+                    ids.push(call.id().to_owned());
                     tracing::debug!("Tool call: {:?}", call.function);
                     futures.push((handler)(call.arguments()));
                 }
@@ -395,15 +395,15 @@ mod tests {
             _tools: Vec<ToolSpec>,
         ) -> Result<ChatCompletion, Self::Error> {
             let call = ToolCall {
-                id: "call1".to_string(),
-                type_name: "function".to_string(),
+                id: "call1".to_owned(),
+                type_name: "function".to_owned(),
                 function: FunctionCall {
-                    name: "test_tool".to_string(),
+                    name: "test_tool".to_owned(),
                     arguments: serde_json::json!({}),
                 },
             };
             let msg = Message::Assistant {
-                content: "assistant".to_string(),
+                content: "assistant".to_owned(),
                 tool_calls: Some(vec![call]),
                 name: None,
             };
@@ -423,16 +423,16 @@ mod tests {
             use async_stream::try_stream;
 
             let stream = try_stream! {
-                yield ChatStreamEvent::Content("assistant".to_string());
+                yield ChatStreamEvent::Content("assistant".to_owned());
                 yield ChatStreamEvent::ToolCallDelta {
                     index: 0,
-                    id: Some("call1".to_string()),
-                    type_name: Some("function".to_string()),
-                    name: Some("test_tool".to_string()),
-                    arguments: Some("{}".to_string()),
+                    id: Some("call1".to_owned()),
+                    type_name: Some("function".to_owned()),
+                    name: Some("test_tool".to_owned()),
+                    arguments: Some("{}".to_owned()),
                 };
                 yield ChatStreamEvent::Done {
-                    finish_reason: Some("stop".to_string()),
+                    finish_reason: Some("stop".to_owned()),
                     usage: Some(Usage::default()),
                 };
             };
@@ -447,7 +447,7 @@ mod tests {
 
     #[tool(description = "test tool")]
     async fn test_tool() -> Result<String, TestError> {
-        Ok("tool_result".to_string())
+        Ok("tool_result".to_owned())
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash, GraphLabel)]

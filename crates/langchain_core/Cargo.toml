@@ -12,3 +12,6 @@ schemars = { workspace = true }
 thiserror = { workspace = true }
 im = { workspace = true }
 langchain_core_macro = { path = "./macro" }
+
+[lints]
+workspace = true

@@ -19,6 +19,11 @@ im = "15.1.0"
 async-stream = "0.3.6"
 futures-util = "0.3.31"
 
+[workspace.lints.clippy]
+str_to_string = "warn"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs_dep)'] }
 
 [profile.dev]
 opt-level = 1

@@ -98,7 +98,7 @@ impl ChatModel for ChatOpenAI {
             .collect::<Vec<_>>();
 
         if messages.is_empty() {
-            return Err(OpenAIError::Other("no choices in response".to_string()));
+            return Err(OpenAIError::Other("no choices in response".to_owned()));
         }
 
         Ok(ChatCompletion {
@@ -209,13 +209,13 @@ impl ChatModel for ChatOpenAI {
                         let finish_reason = choice
                             .get("finish_reason")
                             .and_then(|r| r.as_str())
-                            .map(|s| s.to_string());
+                            .map(|s| s.to_owned());
 
                         if let Some(delta) = choice.get("delta") {
                             if let Some(content) = delta.get("content").and_then(|c| c.as_str())
                                 && !content.is_empty()
                             {
-                                yield ChatStreamEvent::Content(content.to_string());
+                                yield ChatStreamEvent::Content(content.to_owned());
                             }
 
                             if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
@@ -224,17 +224,17 @@ impl ChatModel for ChatOpenAI {
                                         .get("index")
                                         .and_then(|i| i.as_u64())
                                         .unwrap_or(0) as usize;
-                                    let id = call.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                    let type_name = call.get("type").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    let id = call.get("id").and_then(|v| v.as_str()).map(|s| s.to_owned());
+                                    let type_name = call.get("type").and_then(|v| v.as_str()).map(|s| s.to_owned());
                                     let function = call.get("function");
                                     let name = function
                                         .and_then(|f| f.get("name"))
                                         .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
+                                        .map(|s| s.to_owned());
                                     let arguments = function
                                         .and_then(|f| f.get("arguments"))
                                         .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
+                                        .map(|s| s.to_owned());
 
                                     yield ChatStreamEvent::ToolCallDelta {
                                         index,
@@ -269,8 +269,8 @@ impl ChatModel for ChatOpenAI {
 fn split_sse_event(buffer: &str) -> Option<(String, String)> {
     let idx = buffer.find("\n\n")?;
     let (event, rest) = buffer.split_at(idx);
-    let rest = rest.get(2..).unwrap_or("").to_string();
-    Some((event.to_string(), rest))
+    let rest = rest.get(2..).unwrap_or("").to_owned();
+    Some((event.to_owned(), rest))
 }
 
 fn extract_sse_data(event: &str) -> String {
