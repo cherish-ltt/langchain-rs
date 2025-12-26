@@ -62,9 +62,7 @@ where
     M: ChatModel + Send + Sync + 'static,
 {
     async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, AgentError> {
-        let mut next = input.clone();
-
-        let messages: Vec<_> = next.messages.iter().cloned().collect();
+        let messages: Vec<_> = input.messages.iter().cloned().collect();
 
         let options = InvokeOptions {
             tools: if self.tools.is_empty() {
@@ -83,9 +81,11 @@ where
             .await
             .map_err(|e| AgentError::Model(e))?;
         tracing::debug!("LLM completion: {:?}", completion);
-        next.extend_messages(completion.messages);
-        next.increment_llm_calls();
-        Ok(next)
+
+        let mut delta = MessagesState::default();
+        delta.extend_messages(completion.messages);
+        delta.increment_llm_calls();
+        Ok(delta)
     }
 
     async fn run_stream(
@@ -93,9 +93,7 @@ where
         input: &MessagesState,
         sink: &mut dyn EventSink<ChatStreamEvent>,
     ) -> Result<MessagesState, AgentError> {
-        let mut next = input.clone();
-
-        let messages: Vec<_> = next.messages.iter().cloned().collect();
+        let messages: Vec<_> = input.messages.iter().cloned().collect();
 
         let options = InvokeOptions {
             tools: if self.tools.is_empty() {
@@ -171,6 +169,8 @@ where
             }
         }
 
+        let mut delta = MessagesState::default();
+
         if !content.is_empty() || !tool_calls.is_empty() {
             let assistant = Message::Assistant {
                 content,
@@ -184,11 +184,11 @@ where
                 },
                 name: None,
             };
-            next.push_message_owned(assistant);
+            delta.push_message_owned(assistant);
         }
 
-        next.increment_llm_calls();
-        Ok(next)
+        delta.increment_llm_calls();
+        Ok(delta)
     }
 }
 
@@ -217,8 +217,8 @@ impl<E> Node<MessagesState, MessagesState, E, ChatStreamEvent> for IdentityNode<
 where
     E: Send + Sync + 'static,
 {
-    async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, E> {
-        Ok(input.clone())
+    async fn run_sync(&self, _input: &MessagesState) -> Result<MessagesState, E> {
+        Ok(MessagesState::default())
     }
 
     async fn run_stream(
@@ -236,7 +236,7 @@ where
     E: Error + Send + Sync + 'static,
 {
     async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, AgentError> {
-        let mut next = input.clone();
+        let mut delta = MessagesState::default();
         if let Some(calls) = input.last_tool_calls() {
             let mut futures = Vec::new();
             let mut ids = Vec::new();
@@ -253,10 +253,10 @@ where
                 .map_err(|e| AgentError::Tool(Box::new(e)))?;
             for (id, value) in ids.into_iter().zip(results.into_iter()) {
                 tracing::debug!("Tool call result: {}", value);
-                next.push_message_owned(Message::tool(value.to_string(), id));
+                delta.push_message_owned(Message::tool(value.to_string(), id));
             }
         }
-        Ok(next)
+        Ok(delta)
     }
 
     async fn run_stream(
@@ -299,7 +299,7 @@ impl From<GraphError<AgentError>> for AgentError {
 }
 
 pub struct ReactAgent {
-    graph: StateGraph<MessagesState, AgentError, ChatStreamEvent>,
+    graph: StateGraph<MessagesState, MessagesState, AgentError, ChatStreamEvent>,
     system_prompt: Option<String>,
 }
 
@@ -310,8 +310,17 @@ impl ReactAgent {
     {
         let (tool_specs, tools) = parse_tool(tools);
 
-        let mut graph: StateGraph<MessagesState, AgentError, ChatStreamEvent> =
-            StateGraph::from_entry(BaseGraphLabel::Start);
+        // 使用 MessagesState 作为更新类型（与输入相同），reducer 负责合并
+        let mut graph: StateGraph<MessagesState, MessagesState, AgentError, ChatStreamEvent> =
+            StateGraph::new(
+                BaseGraphLabel::Start,
+                |mut old: MessagesState, update: MessagesState| {
+                    // 合并逻辑：将 update 中的消息追加到 old 中，并累加 llm_calls
+                    old.extend_messages(update.messages);
+                    old.llm_calls += update.llm_calls;
+                    old
+                },
+            );
 
         graph.add_node(
             BaseGraphLabel::Start,
@@ -501,8 +510,15 @@ mod tests {
 
     #[tokio::test]
     async fn llm_and_tool_nodes_work_in_state_graph() {
-        let mut sg: StateGraph<MessagesState, AgentError, ChatStreamEvent> =
-            StateGraph::from_entry(TestLabel::Llm);
+        let mut sg: StateGraph<MessagesState, MessagesState, AgentError, ChatStreamEvent> =
+            StateGraph::new(
+                TestLabel::Llm,
+                |mut old: MessagesState, update: MessagesState| {
+                    old.extend_messages(update.messages);
+                    old.llm_calls += update.llm_calls;
+                    old
+                },
+            );
 
         let tool = test_tool_tool();
 

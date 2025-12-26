@@ -43,7 +43,10 @@ impl MessagesState {
         self.messages.push_back(message);
     }
 
-    pub fn extend_messages(&mut self, messages: Vec<Arc<Message>>) {
+    pub fn extend_messages<I>(&mut self, messages: I)
+    where
+        I: IntoIterator<Item = Arc<Message>>,
+    {
         self.messages.extend(messages);
     }
 

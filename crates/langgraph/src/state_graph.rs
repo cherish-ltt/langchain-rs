@@ -7,11 +7,19 @@ use crate::{
 use std::collections::HashMap;
 use std::fmt::Debug;
 
+/// Reducer 函数类型：接收当前状态和更新，返回新状态
+/// (Current State, Update) -> New State
+pub type Reducer<S, U> = Box<dyn Fn(S, U) -> S + Send + Sync>;
+
 /// StateGraph 带 Ev 泛型
 /// Ev = (): 不支持流式事件
 /// Ev = ChatStreamEvent: 支持 ChatStreamEvent 事件
-pub struct StateGraph<S, E, Ev: Debug = ()> {
-    pub graph: Graph<S, S, E, Ev>,
+///
+/// S: State (全局状态)
+/// U: Update (节点返回的增量更新)
+pub struct StateGraph<S, U, E, Ev: Debug = ()> {
+    pub graph: Graph<S, U, E, Ev>,
+    pub reducer: Reducer<S, U>,
     pub entry: InternedGraphLabel,
 }
 
@@ -28,13 +36,18 @@ pub enum RunStrategy {
     Parallel,
 }
 
-impl<S, E: Debug, Ev: Debug> StateGraph<S, E, Ev> {
+impl<S, U, E: Debug, Ev: Debug> StateGraph<S, U, E, Ev> {
     /// 从入口节点创建 StateGraph
-    pub fn from_entry(entry: impl GraphLabel) -> Self {
+    /// 需要提供一个 reducer 函数来定义如何合并状态
+    pub fn new(
+        entry: impl GraphLabel,
+        reducer: impl Fn(S, U) -> S + Send + Sync + 'static,
+    ) -> Self {
         Self {
             graph: Graph {
                 nodes: HashMap::new(),
             },
+            reducer: Box::new(reducer),
             entry: entry.intern(),
         }
     }
@@ -45,9 +58,10 @@ impl<S, E: Debug, Ev: Debug> StateGraph<S, E, Ev> {
     }
 
     /// 添加节点
+    /// 节点的输入是 S (State)，输出是 U (Update)
     pub fn add_node<T>(&mut self, label: impl GraphLabel, node: T)
     where
-        T: Node<S, S, E, Ev>,
+        T: Node<S, U, E, Ev>,
     {
         self.graph.add_node(label, node);
     }
@@ -58,21 +72,24 @@ impl<S, E: Debug, Ev: Debug> StateGraph<S, E, Ev> {
     }
 
     /// 添加条件边
+    /// 条件函数的输入是 U (Update)，根据更新内容决定下一步去哪里
     pub fn add_condition_edge<F>(
         &mut self,
         pred: impl GraphLabel,
         branches: HashMap<InternedGraphLabel, InternedGraphLabel>,
         condition: F,
     ) where
-        F: Fn(&S) -> Vec<InternedGraphLabel> + Send + Sync + 'static,
+        F: Fn(&U) -> Vec<InternedGraphLabel> + Send + Sync + 'static,
     {
-        self.graph.add_node_condition_edge(pred, branches, condition);
+        self.graph
+            .add_node_condition_edge(pred, branches, condition);
     }
 }
 
-impl<S, E, Ev: Debug> StateGraph<S, E, Ev>
+impl<S, U, E, Ev: Debug> StateGraph<S, U, E, Ev>
 where
     S: Send + Sync + Clone + 'static,
+    U: Send + Sync + 'static,
     E: Send + Sync + std::fmt::Debug + 'static,
     Ev: Send + Sync + 'static,
 {
@@ -86,8 +103,11 @@ where
         let mut current = self.entry;
 
         for _ in 0..max_steps {
-            let (new_state, next) = self.graph.run_once(current, &state).await?;
-            state = new_state;
+            // 运行节点，得到 update
+            let (update, next) = self.graph.run_once(current, &state).await?;
+
+            // 使用 reducer 合并状态
+            state = (self.reducer)(state, update);
 
             match next.len() {
                 0 => return Ok((state, current)),
@@ -114,6 +134,7 @@ where
 
         let mut current = self.entry;
         let graph = &self.graph;
+        let reducer = &self.reducer;
 
         let stream = async_stream::stream! {
             for _ in 0..max_steps {
@@ -126,7 +147,7 @@ where
                 };
 
                 let mut next = Vec::new();
-                let mut output_state = None;
+                let mut update_output = None;
 
                 while let Some(event_result) = node_stream.next().await {
                     match event_result {
@@ -134,7 +155,7 @@ where
                             GraphEvent::NodeEnd {
                                 output, next_nodes, ..
                             } => {
-                                output_state = Some(output);
+                                update_output = Some(output);
                                 next = next_nodes;
                                 break;
                             }
@@ -152,8 +173,9 @@ where
                 }
                 drop(node_stream);
 
-                if let Some(s) = output_state {
-                    state = s;
+                if let Some(update) = update_output {
+                    // 使用 reducer 合并状态
+                    state = (reducer)(state, update);
                 }
 
                 match next.len() {
@@ -197,8 +219,8 @@ where
         let mut current = self.entry;
 
         for _ in 0..max_steps {
-            let (new_state, next) = self.graph.run_once(current, &state).await?;
-            state = new_state;
+            let (update, next) = self.graph.run_once(current, &state).await?;
+            state = (self.reducer)(state, update);
 
             if next.len() != 1 {
                 return Ok((state, current));
@@ -212,15 +234,15 @@ where
 }
 
 /// StateGraph 运行器（用于逐步执行）
-pub struct StateGraphRunner<'g, S, E, Ev: Debug> {
-    pub state_graph: &'g StateGraph<S, E, Ev>,
+pub struct StateGraphRunner<'g, S, U, E, Ev: Debug> {
+    pub state_graph: &'g StateGraph<S, U, E, Ev>,
     pub current: InternedGraphLabel,
     pub state: S,
 }
 
-impl<'g, S, E: Debug, Ev: Debug> StateGraphRunner<'g, S, E, Ev> {
+impl<'g, S, U, E: Debug, Ev: Debug> StateGraphRunner<'g, S, U, E, Ev> {
     /// 创建新的运行器
-    pub fn new(state_graph: &'g StateGraph<S, E, Ev>, initial_state: S) -> Self {
+    pub fn new(state_graph: &'g StateGraph<S, U, E, Ev>, initial_state: S) -> Self {
         Self {
             state_graph,
             current: state_graph.entry,
@@ -231,16 +253,19 @@ impl<'g, S, E: Debug, Ev: Debug> StateGraphRunner<'g, S, E, Ev> {
     /// 执行一步（使用 Sync 模式）
     pub async fn step(&mut self) -> Result<Vec<InternedGraphLabel>, GraphError<E>>
     where
-        S: Send + Sync + 'static,
+        S: Send + Sync + Clone + 'static,
+        U: Send + Sync + 'static,
         E: Send + Sync + 'static,
         Ev: Send + Sync + 'static,
     {
-        let (new_state, next) = self
+        let (update, next) = self
             .state_graph
             .graph
             .run_once(self.current, &self.state)
             .await?;
-        self.state = new_state;
+
+        self.state = (self.state_graph.reducer)(self.state.clone(), update);
+
         if next.len() == 1 {
             self.current = next[0];
         }
@@ -290,7 +315,8 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_linear_chain() {
-        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, i32, NodeError, ()> =
+            StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -307,7 +333,8 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_conditional_branch_taken() {
-        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, i32, NodeError, ()> =
+            StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -331,7 +358,8 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_conditional_branch_not_taken_stops_at_predicate() {
-        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, i32, NodeError, ()> =
+            StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
 
@@ -354,7 +382,8 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runner_steps_through_linear_chain() {
-        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, i32, NodeError, ()> =
+            StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -383,7 +412,8 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_run_strategy_stop_at_non_linear() {
-        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, i32, NodeError, ()> =
+            StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -400,7 +430,8 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_run_strategy_pick_first() {
-        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, i32, NodeError, ()> =
+            StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -417,7 +448,8 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_run_strategy_pick_last() {
-        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, i32, NodeError, ()> =
+            StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -437,20 +469,23 @@ mod tests {
         #[derive(Debug)]
         struct StringNode;
         #[async_trait]
-        impl Node<i32, i32, String, ()> for StringNode {
-            async fn run_sync(&self, input: &i32) -> Result<i32, String> {
-                Ok(*input + 1)
+        impl Node<i32, String, String, ()> for StringNode {
+            async fn run_sync(&self, input: &i32) -> Result<String, String> {
+                Ok(format!("{}", input + 1))
             }
             async fn run_stream(
                 &self,
                 input: &i32,
                 _sink: &mut dyn EventSink<()>,
-            ) -> Result<i32, String> {
-                Ok(*input + 1)
+            ) -> Result<String, String> {
+                Ok(format!("{}", input + 1))
             }
         }
 
-        let mut sg: StateGraph<i32, String, ()> = StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, String, String, ()> =
+            StateGraph::new(TestLabel::A, |_, update: String| {
+                update.parse::<i32>().unwrap()
+            });
         sg.add_node(TestLabel::A, StringNode);
         let (final_state, _) = sg.run(0, 1, RunStrategy::PickFirst).await.unwrap();
         assert_eq!(final_state, 1);
