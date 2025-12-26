@@ -5,7 +5,10 @@ use futures::{Stream, StreamExt, future::try_join_all};
 use langchain_core::{
     message::{FunctionCall, Message, ToolCall},
     request::ToolSpec,
-    state::{ChatCompletion, ChatModel, ChatStreamEvent, MessagesState, RegisteredTool, ToolFn},
+    state::{
+        ChatCompletion, ChatModel, ChatStreamEvent, InvokeOptions, MessagesState, RegisteredTool,
+        ToolFn,
+    },
 };
 use langgraph::{
     graph::GraphError,
@@ -19,38 +22,66 @@ use langgraph::{
 use serde_json::Value;
 use thiserror::Error;
 
-pub struct LlmNode<M, E>
+pub struct LlmNode<M>
 where
-    M: ChatModel<Error = E> + 'static,
-    E: Send + Sync + 'static,
+    M: ChatModel + 'static,
 {
     pub model: M,
     pub tools: Vec<ToolSpec>,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
 }
 
-impl<M, E> LlmNode<M, E>
+impl<M> LlmNode<M>
 where
-    M: ChatModel<Error = E> + 'static,
-    E: Send + Sync + 'static,
+    M: ChatModel + 'static,
 {
     pub fn new(model: M, tools: Vec<ToolSpec>) -> Self {
-        Self { model, tools }
+        Self {
+            model,
+            tools,
+            temperature: None,
+            max_tokens: None,
+        }
+    }
+
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
     }
 }
 
 #[async_trait]
-impl<M, LE> Node<MessagesState, MessagesState, AgentError, ChatStreamEvent> for LlmNode<M, LE>
+impl<M> Node<MessagesState, MessagesState, AgentError, ChatStreamEvent> for LlmNode<M>
 where
-    M: ChatModel<Error = LE> + Send + Sync + 'static,
-    LE: Error + Send + Sync + 'static,
+    M: ChatModel + Send + Sync + 'static,
 {
     async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, AgentError> {
         let mut next = input.clone();
+
+        let messages: Vec<_> = next.messages.iter().cloned().collect();
+
+        let options = InvokeOptions {
+            tools: if self.tools.is_empty() {
+                None
+            } else {
+                Some(&self.tools)
+            },
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            ..Default::default()
+        };
+
         let completion: ChatCompletion = self
             .model
-            .invoke(next.messages.iter().cloned().collect(), self.tools.clone())
+            .invoke(&messages, &options)
             .await
-            .map_err(|e| AgentError::Model(Box::new(e)))?;
+            .map_err(|e| AgentError::Model(e))?;
         tracing::debug!("LLM completion: {:?}", completion);
         next.extend_messages(completion.messages);
         next.increment_llm_calls();
@@ -63,11 +94,25 @@ where
         sink: &mut dyn EventSink<ChatStreamEvent>,
     ) -> Result<MessagesState, AgentError> {
         let mut next = input.clone();
+
+        let messages: Vec<_> = next.messages.iter().cloned().collect();
+
+        let options = InvokeOptions {
+            tools: if self.tools.is_empty() {
+                None
+            } else {
+                Some(&self.tools)
+            },
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            ..Default::default()
+        };
+
         let mut completion_stream = self
             .model
-            .stream(next.messages.iter().cloned().collect(), self.tools.clone())
+            .stream(&messages, &options)
             .await
-            .map_err(|e| AgentError::Model(Box::new(e)))?;
+            .map_err(|e| AgentError::Model(e))?;
 
         let mut content = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -75,7 +120,7 @@ where
         let mut raw_args = String::new();
 
         while let Some(event) = completion_stream.next().await {
-            let event = event.map_err(|e| AgentError::Model(Box::new(e)))?;
+            let event = event.map_err(|e| AgentError::Model(e))?;
             sink.emit(event.clone()).await;
 
             match event {
@@ -139,7 +184,7 @@ where
                 },
                 name: None,
             };
-            next.push_message(assistant);
+            next.push_message_owned(assistant);
         }
 
         next.increment_llm_calls();
@@ -208,7 +253,7 @@ where
                 .map_err(|e| AgentError::Tool(Box::new(e)))?;
             for (id, value) in ids.into_iter().zip(results.into_iter()) {
                 tracing::debug!("Tool call result: {}", value);
-                next.push_message(Message::tool(value.to_string(), id));
+                next.push_message_owned(Message::tool(value.to_string(), id));
             }
         }
         Ok(next)
@@ -227,12 +272,6 @@ where
 enum ReactAgentLabel {
     Llm,
     Tool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum ReactAgentBranch {
-    Tool,
-    End,
 }
 
 pub use langchain_core::ToolError;
@@ -260,7 +299,7 @@ impl From<GraphError<AgentError>> for AgentError {
 }
 
 pub struct ReactAgent {
-    graph: StateGraph<MessagesState, AgentError, ReactAgentBranch, ChatStreamEvent>,
+    graph: StateGraph<MessagesState, AgentError, ChatStreamEvent>,
     system_prompt: Option<String>,
 }
 
@@ -268,11 +307,10 @@ impl ReactAgent {
     pub fn create_agent<M>(model: M, tools: Vec<RegisteredTool<ToolError>>) -> Self
     where
         M: ChatModel + Send + Sync + 'static,
-        M::Error: Error + Send + Sync + 'static,
     {
         let (tool_specs, tools) = parse_tool(tools);
 
-        let mut graph: StateGraph<MessagesState, AgentError, ReactAgentBranch, ChatStreamEvent> =
+        let mut graph: StateGraph<MessagesState, AgentError, ChatStreamEvent> =
             StateGraph::from_entry(BaseGraphLabel::Start);
 
         graph.add_node(
@@ -291,14 +329,18 @@ impl ReactAgent {
         graph.add_node(ReactAgentLabel::Tool, ToolNode::new(tools));
 
         let mut branches = HashMap::new();
-        branches.insert(ReactAgentBranch::Tool, ReactAgentLabel::Tool.intern());
-        branches.insert(ReactAgentBranch::End, BaseGraphLabel::End.intern());
+        // 使用 Label 作为分支键
+        branches.insert(
+            ReactAgentLabel::Tool.intern(),
+            ReactAgentLabel::Tool.intern(),
+        );
+        branches.insert(BaseGraphLabel::End.intern(), BaseGraphLabel::End.intern());
         graph.add_edge(BaseGraphLabel::Start, ReactAgentLabel::Llm);
         graph.add_condition_edge(ReactAgentLabel::Llm, branches, |state: &MessagesState| {
             if state.last_tool_calls().is_some() {
-                vec![ReactAgentBranch::Tool]
+                vec![ReactAgentLabel::Tool.intern()]
             } else {
-                vec![ReactAgentBranch::End]
+                vec![BaseGraphLabel::End.intern()]
             }
         });
 
@@ -318,9 +360,9 @@ impl ReactAgent {
     pub async fn invoke(&self, message: Message) -> Result<MessagesState, AgentError> {
         let mut state = MessagesState::default();
         if let Some(system_prompt) = &self.system_prompt {
-            state.push_message(Message::system(system_prompt.clone()));
+            state.push_message_owned(Message::system(system_prompt.clone()));
         }
-        state.push_message(message);
+        state.push_message_owned(message);
         let max_steps = 25;
         let (state, _) = self
             .graph
@@ -335,9 +377,9 @@ impl ReactAgent {
     ) -> Result<impl Stream<Item = ChatStreamEvent> + '_, AgentError> {
         let mut state = MessagesState::default();
         if let Some(system_prompt) = &self.system_prompt {
-            state.push_message(Message::system(system_prompt.clone()));
+            state.push_message_owned(Message::system(system_prompt.clone()));
         }
-        state.push_message(message);
+        state.push_message_owned(message);
         let max_steps = 25;
         let stream = self
             .graph
@@ -387,13 +429,11 @@ mod tests {
 
     #[async_trait]
     impl ChatModel for TestModel {
-        type Error = TestError;
-
         async fn invoke(
             &self,
-            _messages: Vec<Message>,
-            _tools: Vec<ToolSpec>,
-        ) -> Result<ChatCompletion, Self::Error> {
+            _messages: &[std::sync::Arc<Message>],
+            _options: &langchain_core::state::InvokeOptions<'_>,
+        ) -> Result<ChatCompletion, Box<dyn std::error::Error + Send + Sync>> {
             let call = ToolCall {
                 id: "call1".to_owned(),
                 type_name: "function".to_owned(),
@@ -410,16 +450,19 @@ mod tests {
 
             let usage = Usage::default();
             Ok(ChatCompletion {
-                messages: vec![msg],
+                messages: vec![std::sync::Arc::new(msg)],
                 usage,
             })
         }
 
         async fn stream(
             &self,
-            _messages: Vec<Message>,
-            _tools: Vec<ToolSpec>,
-        ) -> Result<langchain_core::state::ChatStream<Self::Error>, Self::Error> {
+            _messages: &[std::sync::Arc<Message>],
+            _options: &langchain_core::state::InvokeOptions<'_>,
+        ) -> Result<
+            langchain_core::state::StandardChatStream,
+            Box<dyn std::error::Error + Send + Sync>,
+        > {
             use async_stream::try_stream;
 
             let stream = try_stream! {
@@ -456,15 +499,9 @@ mod tests {
         Tool,
     }
 
-    #[expect(unused)]
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-    enum TestBranch {
-        Default,
-    }
-
     #[tokio::test]
     async fn llm_and_tool_nodes_work_in_state_graph() {
-        let mut sg: StateGraph<MessagesState, AgentError, TestBranch, ChatStreamEvent> =
+        let mut sg: StateGraph<MessagesState, AgentError, ChatStreamEvent> =
             StateGraph::from_entry(TestLabel::Llm);
 
         let tool = test_tool_tool();
@@ -488,12 +525,12 @@ mod tests {
         assert_eq!(final_state.llm_calls, 1);
         assert_eq!(final_state.messages.len(), 3);
 
-        match &final_state.messages[0] {
+        match final_state.messages[0].as_ref() {
             Message::User { .. } => {}
             _ => panic!("first message must be user"),
         }
 
-        match &final_state.messages[1] {
+        match final_state.messages[1].as_ref() {
             Message::Assistant { tool_calls, .. } => {
                 assert!(tool_calls.is_some());
                 assert_eq!(tool_calls.as_ref().unwrap().len(), 1);
@@ -501,7 +538,7 @@ mod tests {
             _ => panic!("second message must be assistant"),
         }
 
-        match &final_state.messages[2] {
+        match final_state.messages[2].as_ref() {
             Message::Tool { .. } => {}
             _ => panic!("third message must be tool"),
         }

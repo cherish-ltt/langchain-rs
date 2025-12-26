@@ -7,7 +7,7 @@ use futures::Stream;
 use thiserror::Error;
 
 use crate::{
-    edge::{BranchKind, Edge},
+    edge::Edge,
     label::InternedGraphLabel,
 };
 
@@ -67,17 +67,16 @@ impl_downcast!(Node<I, O, E, Ev>);
 /// * `I` - 节点输入类型
 /// * `O` - 节点输出类型
 /// * `E` - 节点错误类型
-/// * `B` - 分支类型，必须实现 `BranchKind` trait
 /// * `Ev` - 事件类型
-pub struct NodeState<I, O, E, B: BranchKind, Ev: Debug> {
+pub struct NodeState<I, O, E, Ev: Debug> {
     pub label: InternedGraphLabel,
     /// 节点类型名称，用于调试和日志记录
     pub type_name: &'static str,
     pub node: Box<dyn Node<I, O, E, Ev>>,
-    pub edges: Vec<Edge<O, B>>,
+    pub edges: Vec<Edge<O>>,
 }
 
-impl<I, O, E, B: BranchKind, Ev: Debug> NodeState<I, O, E, B, Ev> {
+impl<I, O, E, Ev: Debug> NodeState<I, O, E, Ev> {
     pub fn new<T>(label: InternedGraphLabel, node: T) -> Self
     where
         T: Node<I, O, E, Ev>,
@@ -91,7 +90,7 @@ impl<I, O, E, B: BranchKind, Ev: Debug> NodeState<I, O, E, B, Ev> {
     }
 }
 
-impl<I, O, E, B: BranchKind, Ev: Debug> Debug for NodeState<I, O, E, B, Ev> {
+impl<I, O, E, Ev: Debug> Debug for NodeState<I, O, E, Ev> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{:?} ({})", self.label, self.type_name)
     }

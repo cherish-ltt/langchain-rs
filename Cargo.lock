@@ -727,6 +727,7 @@ dependencies = [
  "downcast-rs",
  "futures",
  "langgraph_macro",
+ "smallvec",
  "thiserror",
  "tokio",
  "tracing",

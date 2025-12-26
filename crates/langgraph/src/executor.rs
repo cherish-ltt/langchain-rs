@@ -1,17 +1,16 @@
 use crate::{
-    edge::BranchKind,
     graph::{Graph, GraphError},
     label::InternedGraphLabel,
 };
 use std::fmt::Debug;
 
-pub struct Executor<'g, I, O, E: std::error::Error, B: BranchKind, Ev: Debug = ()> {
-    pub graph: &'g Graph<I, O, E, B, Ev>,
+pub struct Executor<'g, I, O, E: std::error::Error, Ev: Debug = ()> {
+    pub graph: &'g Graph<I, O, E, Ev>,
     pub current: InternedGraphLabel,
 }
 
-impl<'g, I, O, E: std::error::Error, B: BranchKind, Ev: Debug> Executor<'g, I, O, E, B, Ev> {
-    pub fn new(graph: &'g Graph<I, O, E, B, Ev>, start: InternedGraphLabel) -> Self {
+impl<'g, I, O, E: std::error::Error, Ev: Debug> Executor<'g, I, O, E, Ev> {
+    pub fn new(graph: &'g Graph<I, O, E, Ev>, start: InternedGraphLabel) -> Self {
         Self {
             graph,
             current: start,
@@ -97,17 +96,9 @@ mod test {
         }
     }
 
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-    enum TestBranch {
-        #[expect(unused)]
-        Default,
-        #[expect(unused)]
-        Alt,
-    }
-
     #[tokio::test]
     async fn executor_drives_linear_flow() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -132,7 +123,7 @@ mod test {
 
     #[tokio::test]
     async fn run_until_stuck_executes_multiple_steps() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, ()> = Graph {
             nodes: HashMap::new(),
         };
 

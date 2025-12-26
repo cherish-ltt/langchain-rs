@@ -40,5 +40,8 @@ async fn main() {
         .invoke(Message::user("计算100和200的和，同时计算999减去800的差"))
         .await
         .unwrap();
-    println!("{:?}", state.messages.iter().last().unwrap());
+
+    if let Some(msg) = state.messages.last() {
+        println!("最终回复: {:?}", msg.as_ref());
+    }
 }

@@ -1,6 +1,6 @@
 //! 暂时使用的是OpenAI的标准，后面对接其他标准再进行合并配置
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,7 +13,7 @@ pub struct RequestBody {
     pub model: String,
 
     /// 聊天消息列表
-    pub messages: Vec<Message>,
+    pub messages: Vec<Arc<Message>>,
 
     /// 采样温度，范围为0到2或者更高，默认值为1.0
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,7 +111,7 @@ impl RequestBody {
     /// let req = RequestBody::from_model("gpt-3.5-turbo")
     ///     .with_messages(vec![Message::user("你好")]);
     /// ```
-    pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
+    pub fn with_messages(mut self, messages: Vec<Arc<Message>>) -> Self {
         self.messages.extend(messages);
         self
     }

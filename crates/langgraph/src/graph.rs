@@ -5,18 +5,18 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::{
-    edge::{BranchKind, Edge, EdgeCondition},
+    edge::{Edge, EdgeCondition},
     event::GraphEvent,
     label::{GraphLabel, InternedGraphLabel, IntoGraphNodeArray},
     node::{EventStream, Node, NodeState},
 };
 
 #[derive(Default)]
-pub struct Graph<I, O, E: std::error::Error, B: BranchKind, Ev: std::fmt::Debug> {
-    pub nodes: HashMap<InternedGraphLabel, NodeState<I, O, E, B, Ev>>,
+pub struct Graph<I, O, E, Ev: std::fmt::Debug> {
+    pub nodes: HashMap<InternedGraphLabel, NodeState<I, O, E, Ev>>,
 }
 
-impl<I, O, E: std::error::Error, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O, E, B, Ev> {
+impl<I, O, E: std::fmt::Debug, Ev: std::fmt::Debug> Graph<I, O, E, Ev> {
     /// 添加一个节点到图中
     pub fn add_node<T>(&mut self, label: impl GraphLabel, node: T)
     where
@@ -30,7 +30,7 @@ impl<I, O, E: std::error::Error, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O,
     pub fn get_node_state_mut(
         &mut self,
         label: impl GraphLabel,
-    ) -> Result<&mut NodeState<I, O, E, B, Ev>, GraphError<E>> {
+    ) -> Result<&mut NodeState<I, O, E, Ev>, GraphError<E>> {
         let label = label.intern();
         self.nodes
             .get_mut(&label)
@@ -71,17 +71,17 @@ impl<I, O, E: std::error::Error, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O,
     pub fn try_add_node_condition_edge<F>(
         &mut self,
         pred_node: impl GraphLabel,
-        branches: HashMap<B, InternedGraphLabel>,
+        branches: HashMap<InternedGraphLabel, InternedGraphLabel>,
         condition: F,
     ) -> Result<(), GraphError<E>>
     where
-        F: Fn(&O) -> Vec<B> + Send + Sync + 'static,
+        F: Fn(&O) -> Vec<InternedGraphLabel> + Send + Sync + 'static,
     {
         let branch_keys: std::collections::HashSet<_> = branches.keys().copied().collect();
 
         // 以后有必要再为每个条件分支设计单独的分支类型，这样做next_nodes的Key就得使用Box<dyn BranchKind>，目前没得必要
         // 检查 condition 是否返回的分支都在 branches 中
-        let wrapped: EdgeCondition<O, B> = Box::new(move |o: &O| {
+        let wrapped: EdgeCondition<O> = Box::new(move |o: &O| {
             let result = condition(o);
             assert!(
                 result.iter().all(|b| branch_keys.contains(b)),
@@ -94,8 +94,10 @@ impl<I, O, E: std::error::Error, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O,
 
         let pred_node_state = self.get_node_state_mut(pred_node)?;
 
+        let next_nodes = branches.into_iter().collect();
+
         let edge = Edge::ConditionalEdge {
-            next_nodes: branches,
+            next_nodes,
             condition: wrapped,
         };
 
@@ -120,10 +122,10 @@ impl<I, O, E: std::error::Error, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O,
     pub fn add_node_condition_edge<F>(
         &mut self,
         pred_node: impl GraphLabel,
-        branches: HashMap<B, InternedGraphLabel>,
+        branches: HashMap<InternedGraphLabel, InternedGraphLabel>,
         condition: F,
     ) where
-        F: Fn(&O) -> Vec<B> + Send + Sync + 'static,
+        F: Fn(&O) -> Vec<InternedGraphLabel> + Send + Sync + 'static,
     {
         self.try_add_node_condition_edge(pred_node, branches, condition)
             .unwrap();
@@ -236,7 +238,7 @@ impl<I, O, E: std::error::Error, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O,
 
     fn get_next_nodes(
         &self,
-        state: &NodeState<I, O, E, B, Ev>,
+        state: &NodeState<I, O, E, Ev>,
         output: &O,
     ) -> Vec<InternedGraphLabel> {
         let mut next_nodes = Vec::new();
@@ -249,7 +251,8 @@ impl<I, O, E: std::error::Error, B: BranchKind, Ev: std::fmt::Debug> Graph<I, O,
                 } => {
                     let branches_to_take = (condition)(output);
                     for branch in branches_to_take {
-                        if let Some(label) = branches.get(&branch) {
+                        // 在 Vec 中查找对应的分支
+                        if let Some((_, label)) = branches.iter().find(|(b, _)| *b == branch) {
                             next_nodes.push(*label);
                         }
                     }
@@ -311,7 +314,7 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, GraphLabel)]
     enum TestBranch {
         Default,
         #[expect(unused)]
@@ -342,7 +345,7 @@ mod tests {
 
     #[test]
     fn add_node_and_edge_should_link_successor() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -365,7 +368,7 @@ mod tests {
 
     #[test]
     fn add_node_edges_should_link_all_successors_in_chain() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -400,7 +403,7 @@ mod tests {
 
     #[test]
     fn duplicate_edge_returns_error() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -416,7 +419,7 @@ mod tests {
 
     #[test]
     fn add_node_edges_with_single_node_creates_no_edges() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -431,7 +434,7 @@ mod tests {
 
     #[test]
     fn add_condition_edge_stores_branches_and_condition() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -439,12 +442,12 @@ mod tests {
         graph.add_node(TestLabel::B, IncNode);
 
         let mut branches = HashMap::new();
-        branches.insert(TestBranch::Default, TestLabel::B.intern());
+        branches.insert(TestBranch::Default.intern(), TestLabel::B.intern());
 
         graph
             .try_add_node_condition_edge(TestLabel::A, branches.clone(), |output: &i32| {
                 if *output > 0 {
-                    vec![TestBranch::Default]
+                    vec![TestBranch::Default.intern()]
                 } else {
                     Vec::new()
                 }
@@ -461,13 +464,13 @@ mod tests {
                 condition,
             } => {
                 assert_eq!(next_nodes.len(), branches.len());
-                assert_eq!(
-                    next_nodes.get(&TestBranch::Default),
-                    branches.get(&TestBranch::Default)
-                );
+                // 验证 Vec 中包含正确的分支
+                let branch_key = TestBranch::Default.intern();
+                let target_node = branches.get(&branch_key).unwrap();
+                assert!(next_nodes.contains(&(branch_key, *target_node)));
 
                 let result = (condition)(&1);
-                assert_eq!(result, vec![TestBranch::Default]);
+                assert_eq!(result, vec![TestBranch::Default.intern()]);
             }
             _ => panic!("expected ConditionalEdge"),
         }
@@ -477,7 +480,7 @@ mod tests {
     async fn run_stream_emits_events_and_collects_successors() {
         use futures::StreamExt;
 
-        let mut graph: Graph<i32, i32, NodeError, TestBranch, i32> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, i32> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -531,7 +534,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_once_executes_and_collects_successors() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, ()> = Graph {
             nodes: HashMap::new(),
         };
 
@@ -549,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_once_with_mode_sync_executes_correctly() {
-        let mut graph: Graph<i32, i32, NodeError, TestBranch, ()> = Graph {
+        let mut graph: Graph<i32, i32, NodeError, ()> = Graph {
             nodes: HashMap::new(),
         };
 

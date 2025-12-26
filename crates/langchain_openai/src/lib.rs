@@ -1,15 +1,16 @@
 //! # OpenAI 标准实现
 //! 该模块实现了 OpenAI 标准的模型和工具调用，提供了与 OpenAI API 交互的功能。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use langchain_core::{
     message::Message,
-    request::{RequestBody, ToolSpec},
+    request::RequestBody,
     response::ResponseBody,
     response::Usage,
-    state::{ChatCompletion, ChatModel, ChatStream, ChatStreamEvent},
+    state::{ChatCompletion, ChatModel, ChatStreamEvent, InvokeOptions, StandardChatStream},
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
@@ -24,30 +25,51 @@ pub struct ChatOpenAI {
     base_url: String,
     model: String,
     api_key: String,
-    #[expect(unused)]
-    temperature: Option<f32>,
-    #[expect(unused)]
-    max_tokens: Option<usize>,
-    #[expect(unused)]
-    timeout: Option<Duration>,
+    default_temperature: Option<f32>,
+    default_max_tokens: Option<u32>,
+    default_top_p: Option<f32>,
 }
 
 #[async_trait::async_trait]
 impl ChatModel for ChatOpenAI {
-    type Error = OpenAIError;
-
     async fn invoke(
         &self,
-        messages: Vec<Message>,
-        tools: Vec<ToolSpec>,
-    ) -> Result<ChatCompletion, Self::Error> {
-        let request = RequestBody::from_model(&self.model)
-            .with_messages(messages)
-            .with_tools(tools);
+        messages: &[Arc<Message>],
+        options: &InvokeOptions<'_>,
+    ) -> Result<ChatCompletion, Box<dyn std::error::Error + Send + Sync>> {
+        // 解包 Arc，只克隆 Arc 指针，不克隆 Message 内容
+        let messages: Vec<Arc<Message>> = messages.iter().map(|m| m.clone()).collect();
+
+        let tools = options.tools.unwrap_or(&[]).to_vec();
+
+        let mut request = RequestBody::from_model(&self.model).with_messages(messages);
+
+        // 应用配置选项
+        if let Some(temperature) = options.temperature.or(self.default_temperature) {
+            request.temperature = Some(temperature);
+        }
+        if let Some(max_tokens) = options.max_tokens.or(self.default_max_tokens) {
+            request.max_tokens = Some(max_tokens);
+        }
+        if let Some(top_p) = options.top_p.or(self.default_top_p) {
+            request.top_p = Some(top_p);
+        }
+        // OpenAI API 的 stop 参数是 String，我们取第一个或合并
+        if let Some(stop) = options.stop {
+            if !stop.is_empty() {
+                request.stop = Some(stop.join(", "));
+            }
+        }
+
+        if !tools.is_empty() {
+            request = request.with_tools(tools);
+        }
+
         tracing::debug!(
             "OpenAI API request: {}",
             serde_json::to_string_pretty(&request).unwrap()
         );
+
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
@@ -55,6 +77,7 @@ impl ChatModel for ChatOpenAI {
                 .map_err(|e| OpenAIError::InvalidHeaderValue(e.to_string()))?,
         );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
         let response = self
             .client
             .post(format!("{}{CHAT_COMPLETIONS}", self.base_url))
@@ -78,9 +101,15 @@ impl ChatModel for ChatOpenAI {
                 .unwrap_or_else(|e| format!("failed to read error body: {e}"));
             tracing::error!("OpenAI API error: status = {status}, body = {body}");
             return Err(match status.as_u16() {
-                401 => OpenAIError::InvalidApiKey,
-                404 => OpenAIError::ModelNotFound,
-                _ => OpenAIError::Other(format!("status: {status}, body: {body}")),
+                401 => {
+                    Box::new(OpenAIError::InvalidApiKey) as Box<dyn std::error::Error + Send + Sync>
+                }
+                404 => {
+                    Box::new(OpenAIError::ModelNotFound) as Box<dyn std::error::Error + Send + Sync>
+                }
+                _ => Box::new(OpenAIError::Other(format!(
+                    "status: {status}, body: {body}"
+                ))) as Box<dyn std::error::Error + Send + Sync>,
             });
         }
 
@@ -94,11 +123,11 @@ impl ChatModel for ChatOpenAI {
         let messages = response
             .choices
             .iter()
-            .map(|c| c.message.clone())
+            .map(|c| Arc::new(c.message.clone()))
             .collect::<Vec<_>>();
 
         if messages.is_empty() {
-            return Err(OpenAIError::Other("no choices in response".to_owned()));
+            return Err(OpenAIError::Other("no choices in response".to_owned()).into());
         }
 
         Ok(ChatCompletion {
@@ -109,12 +138,37 @@ impl ChatModel for ChatOpenAI {
 
     async fn stream(
         &self,
-        messages: Vec<Message>,
-        tools: Vec<ToolSpec>,
-    ) -> Result<ChatStream<Self::Error>, Self::Error> {
-        let mut request = RequestBody::from_model(&self.model)
-            .with_messages(messages)
-            .with_tools(tools);
+        messages: &[Arc<Message>],
+        options: &InvokeOptions<'_>,
+    ) -> Result<StandardChatStream, Box<dyn std::error::Error + Send + Sync>> {
+        // 解包 Arc，只克隆 Arc 指针，不克隆 Message 内容
+        let messages: Vec<Arc<Message>> = messages.iter().map(|m| m.clone()).collect();
+
+        let tools = options.tools.unwrap_or(&[]).to_vec();
+
+        let mut request = RequestBody::from_model(&self.model).with_messages(messages);
+
+        // 应用配置选项
+        if let Some(temperature) = options.temperature.or(self.default_temperature) {
+            request.temperature = Some(temperature);
+        }
+        if let Some(max_tokens) = options.max_tokens.or(self.default_max_tokens) {
+            request.max_tokens = Some(max_tokens);
+        }
+        if let Some(top_p) = options.top_p.or(self.default_top_p) {
+            request.top_p = Some(top_p);
+        }
+        // OpenAI API 的 stop 参数是 String，我们取第一个或合并
+        if let Some(stop) = options.stop {
+            if !stop.is_empty() {
+                request.stop = Some(stop.join(", "));
+            }
+        }
+
+        if !tools.is_empty() {
+            request = request.with_tools(tools);
+        }
+
         request.stream = true;
 
         tracing::debug!(
@@ -153,9 +207,15 @@ impl ChatModel for ChatOpenAI {
                 .unwrap_or_else(|e| format!("failed to read error body: {e}"));
             tracing::error!("OpenAI API error: status = {status}, body = {body}");
             return Err(match status.as_u16() {
-                401 => OpenAIError::InvalidApiKey,
-                404 => OpenAIError::ModelNotFound,
-                _ => OpenAIError::Other(format!("status: {status}, body: {body}")),
+                401 => {
+                    Box::new(OpenAIError::InvalidApiKey) as Box<dyn std::error::Error + Send + Sync>
+                }
+                404 => {
+                    Box::new(OpenAIError::ModelNotFound) as Box<dyn std::error::Error + Send + Sync>
+                }
+                _ => Box::new(OpenAIError::Other(format!(
+                    "status: {status}, body: {body}"
+                ))) as Box<dyn std::error::Error + Send + Sync>,
             });
         }
 
@@ -165,7 +225,7 @@ impl ChatModel for ChatOpenAI {
             let mut bytes_stream = response.bytes_stream();
 
             while let Some(chunk) = bytes_stream.next().await {
-                let chunk = chunk.map_err(OpenAIError::Http)?;
+                let chunk = chunk.map_err(|e| OpenAIError::Http(e))?;
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
                 while let Some((event, rest)) = split_sse_event(&buffer) {
@@ -293,7 +353,8 @@ pub struct ChatOpenAIBuilder {
     model: String,
     api_key: String,
     temperature: Option<f32>,
-    max_tokens: Option<usize>,
+    max_tokens: Option<u32>,
+    top_p: Option<f32>,
     timeout: Option<Duration>,
 }
 
@@ -305,6 +366,7 @@ impl ChatOpenAIBuilder {
             api_key: api_key.into(),
             temperature: None,
             max_tokens: None,
+            top_p: None,
             timeout: None,
         }
     }
@@ -313,22 +375,32 @@ impl ChatOpenAIBuilder {
         self.base_url = base_url;
         self
     }
+
     pub fn model(mut self, model: String) -> Self {
         self.model = model;
         self
     }
+
     pub fn temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
         self
     }
-    pub fn max_tokens(mut self, max_tokens: usize) -> Self {
+
+    pub fn max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = Some(max_tokens);
         self
     }
+
+    pub fn top_p(mut self, top_p: f32) -> Self {
+        self.top_p = Some(top_p);
+        self
+    }
+
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
+
     pub fn build(self) -> ChatOpenAI {
         let timeout = self.timeout.unwrap_or_else(|| Duration::from_secs(600));
         let client = reqwest::Client::builder()
@@ -340,9 +412,9 @@ impl ChatOpenAIBuilder {
             base_url: self.base_url,
             model: self.model,
             api_key: self.api_key,
-            temperature: self.temperature,
-            max_tokens: self.max_tokens,
-            timeout: Some(timeout),
+            default_temperature: self.temperature,
+            default_max_tokens: self.max_tokens,
+            default_top_p: self.top_p,
         }
     }
 }
@@ -351,18 +423,21 @@ impl ChatOpenAIBuilder {
 mod tests {
     use super::*;
     use langchain_core::message::Message;
+    use langchain_core::state::InvokeOptions;
+    use std::sync::Arc;
 
     #[tokio::test]
     #[ignore]
     async fn invoke_with_real_openai() {
-        let model = "deepseek-ai/DeepSeek-V3.2";
+        let model = "deepseek-ai/DeepSeek-V3";
         let base_url = "https://api.siliconflow.cn/v1";
         let api_key = "";
 
         let client = ChatOpenAIBuilder::from_base(model, base_url, api_key).build();
-        let messages = vec![Message::user("hello")];
+        let messages = vec![Arc::new(Message::user("hello"))];
+        let options = InvokeOptions::default();
 
-        let result = client.invoke(messages, vec![]).await;
+        let result = client.invoke(&messages, &options).await;
 
         match result {
             Ok(completion) => {

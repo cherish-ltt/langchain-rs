@@ -13,6 +13,7 @@ futures = "0.3"
 tracing = { workspace = true }
 langgraph_macro = { path = "./macro" }
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
+smallvec = "1.15.1"
 
 
 [lints]

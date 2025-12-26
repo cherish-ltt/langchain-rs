@@ -1,5 +1,4 @@
 use crate::{
-    edge::BranchKind,
     event::GraphEvent,
     graph::{Graph, GraphError},
     label::{GraphLabel, InternedGraphLabel},
@@ -11,8 +10,8 @@ use std::fmt::Debug;
 /// StateGraph 带 Ev 泛型
 /// Ev = (): 不支持流式事件
 /// Ev = ChatStreamEvent: 支持 ChatStreamEvent 事件
-pub struct StateGraph<S, E: std::error::Error, B: BranchKind, Ev: Debug = ()> {
-    pub graph: Graph<S, S, E, B, Ev>,
+pub struct StateGraph<S, E, Ev: Debug = ()> {
+    pub graph: Graph<S, S, E, Ev>,
     pub entry: InternedGraphLabel,
 }
 
@@ -29,7 +28,7 @@ pub enum RunStrategy {
     Parallel,
 }
 
-impl<S, E: std::error::Error, B: BranchKind, Ev: Debug> StateGraph<S, E, B, Ev> {
+impl<S, E: Debug, Ev: Debug> StateGraph<S, E, Ev> {
     /// 从入口节点创建 StateGraph
     pub fn from_entry(entry: impl GraphLabel) -> Self {
         Self {
@@ -62,17 +61,16 @@ impl<S, E: std::error::Error, B: BranchKind, Ev: Debug> StateGraph<S, E, B, Ev> 
     pub fn add_condition_edge<F>(
         &mut self,
         pred: impl GraphLabel,
-        branches: HashMap<B, InternedGraphLabel>,
+        branches: HashMap<InternedGraphLabel, InternedGraphLabel>,
         condition: F,
     ) where
-        F: Fn(&S) -> Vec<B> + Send + Sync + 'static,
+        F: Fn(&S) -> Vec<InternedGraphLabel> + Send + Sync + 'static,
     {
-        self.graph
-            .add_node_condition_edge(pred, branches, condition);
+        self.graph.add_node_condition_edge(pred, branches, condition);
     }
 }
 
-impl<S, E: std::error::Error, B: BranchKind, Ev: Debug> StateGraph<S, E, B, Ev>
+impl<S, E, Ev: Debug> StateGraph<S, E, Ev>
 where
     S: Send + Sync + Clone + 'static,
     E: Send + Sync + std::fmt::Debug + 'static,
@@ -214,15 +212,15 @@ where
 }
 
 /// StateGraph 运行器（用于逐步执行）
-pub struct StateGraphRunner<'g, S, E: std::error::Error, B: BranchKind, Ev: Debug> {
-    pub state_graph: &'g StateGraph<S, E, B, Ev>,
+pub struct StateGraphRunner<'g, S, E, Ev: Debug> {
+    pub state_graph: &'g StateGraph<S, E, Ev>,
     pub current: InternedGraphLabel,
     pub state: S,
 }
 
-impl<'g, S, E: std::error::Error, B: BranchKind, Ev: Debug> StateGraphRunner<'g, S, E, B, Ev> {
+impl<'g, S, E: Debug, Ev: Debug> StateGraphRunner<'g, S, E, Ev> {
     /// 创建新的运行器
-    pub fn new(state_graph: &'g StateGraph<S, E, B, Ev>, initial_state: S) -> Self {
+    pub fn new(state_graph: &'g StateGraph<S, E, Ev>, initial_state: S) -> Self {
         Self {
             state_graph,
             current: state_graph.entry,
@@ -283,7 +281,7 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, GraphLabel)]
     enum TestBranch {
         Default,
         #[expect(unused)]
@@ -292,8 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_linear_chain() {
-        let mut sg: StateGraph<i32, NodeError, TestBranch, ()> =
-            StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -310,18 +307,17 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_conditional_branch_taken() {
-        let mut sg: StateGraph<i32, NodeError, TestBranch, ()> =
-            StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
 
         let mut branches = HashMap::new();
-        branches.insert(TestBranch::Default, TestLabel::B.intern());
+        branches.insert(TestBranch::Default.intern(), TestLabel::B.intern());
 
         sg.add_condition_edge(TestLabel::A, branches, |state: &i32| {
             if *state >= 0 {
-                vec![TestBranch::Default]
+                vec![TestBranch::Default.intern()]
             } else {
                 Vec::new()
             }
@@ -335,17 +331,16 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_conditional_branch_not_taken_stops_at_predicate() {
-        let mut sg: StateGraph<i32, NodeError, TestBranch, ()> =
-            StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
 
         sg.add_node(TestLabel::A, AddOne);
 
         let mut branches = HashMap::new();
-        branches.insert(TestBranch::Default, TestLabel::B.intern());
+        branches.insert(TestBranch::Default.intern(), TestLabel::B.intern());
 
         sg.add_condition_edge(TestLabel::A, branches, |state: &i32| {
             if *state > 0 {
-                vec![TestBranch::Default]
+                vec![TestBranch::Default.intern()]
             } else {
                 Vec::new()
             }
@@ -359,8 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runner_steps_through_linear_chain() {
-        let mut sg: StateGraph<i32, NodeError, TestBranch, ()> =
-            StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -389,8 +383,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_run_strategy_stop_at_non_linear() {
-        let mut sg: StateGraph<i32, NodeError, TestBranch, ()> =
-            StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -407,8 +400,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_run_strategy_pick_first() {
-        let mut sg: StateGraph<i32, NodeError, TestBranch, ()> =
-            StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -425,8 +417,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_run_strategy_pick_last() {
-        let mut sg: StateGraph<i32, NodeError, TestBranch, ()> =
-            StateGraph::from_entry(TestLabel::A);
+        let mut sg: StateGraph<i32, NodeError, ()> = StateGraph::from_entry(TestLabel::A);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -439,5 +430,29 @@ mod tests {
 
         assert_eq!(final_state, 2);
         assert_eq!(final_label, TestLabel::C.intern());
+    }
+
+    #[tokio::test]
+    async fn state_graph_works_with_non_error_type() {
+        #[derive(Debug)]
+        struct StringNode;
+        #[async_trait]
+        impl Node<i32, i32, String, ()> for StringNode {
+            async fn run_sync(&self, input: &i32) -> Result<i32, String> {
+                Ok(*input + 1)
+            }
+            async fn run_stream(
+                &self,
+                input: &i32,
+                _sink: &mut dyn EventSink<()>,
+            ) -> Result<i32, String> {
+                Ok(*input + 1)
+            }
+        }
+
+        let mut sg: StateGraph<i32, String, ()> = StateGraph::from_entry(TestLabel::A);
+        sg.add_node(TestLabel::A, StringNode);
+        let (final_state, _) = sg.run(0, 1, RunStrategy::PickFirst).await.unwrap();
+        assert_eq!(final_state, 1);
     }
 }
