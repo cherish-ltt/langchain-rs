@@ -78,7 +78,7 @@ where
             .model
             .invoke(&messages, &options)
             .await
-            .map_err(|e| AgentError::Model(e))?;
+            .map_err(AgentError::Model)?;
         tracing::debug!("LLM completion: {:?}", completion);
 
         let mut delta = MessagesState::default();
@@ -109,7 +109,7 @@ where
             .model
             .stream(&messages, &options)
             .await
-            .map_err(|e| AgentError::Model(e))?;
+            .map_err(AgentError::Model)?;
 
         let mut content = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -117,7 +117,7 @@ where
         let mut raw_args = String::new();
 
         while let Some(event) = completion_stream.next().await {
-            let event = event.map_err(|e| AgentError::Model(e))?;
+            let event = event.map_err(AgentError::Model)?;
             sink.emit(event.clone()).await;
 
             match event {

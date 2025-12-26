@@ -37,12 +37,9 @@ impl ChatModel for ChatOpenAI {
         messages: &[Arc<Message>],
         options: &InvokeOptions<'_>,
     ) -> Result<ChatCompletion, Box<dyn std::error::Error + Send + Sync>> {
-        // 解包 Arc，只克隆 Arc 指针，不克隆 Message 内容
-        let messages: Vec<Arc<Message>> = messages.iter().map(|m| m.clone()).collect();
-
         let tools = options.tools.unwrap_or(&[]).to_vec();
 
-        let mut request = RequestBody::from_model(&self.model).with_messages(messages);
+        let mut request = RequestBody::from_model(&self.model).with_messages(messages.to_vec());
 
         // 应用配置选项
         if let Some(temperature) = options.temperature.or(self.default_temperature) {
@@ -55,10 +52,10 @@ impl ChatModel for ChatOpenAI {
             request.top_p = Some(top_p);
         }
         // OpenAI API 的 stop 参数是 String，我们取第一个或合并
-        if let Some(stop) = options.stop {
-            if !stop.is_empty() {
-                request.stop = Some(stop.join(", "));
-            }
+        if let Some(stop) = options.stop
+            && stop.is_empty()
+        {
+            request.stop = Some(stop.join(", "));
         }
 
         if !tools.is_empty() {
@@ -141,12 +138,9 @@ impl ChatModel for ChatOpenAI {
         messages: &[Arc<Message>],
         options: &InvokeOptions<'_>,
     ) -> Result<StandardChatStream, Box<dyn std::error::Error + Send + Sync>> {
-        // 解包 Arc，只克隆 Arc 指针，不克隆 Message 内容
-        let messages: Vec<Arc<Message>> = messages.iter().map(|m| m.clone()).collect();
-
         let tools = options.tools.unwrap_or(&[]).to_vec();
 
-        let mut request = RequestBody::from_model(&self.model).with_messages(messages);
+        let mut request = RequestBody::from_model(&self.model).with_messages(messages.to_vec());
 
         // 应用配置选项
         if let Some(temperature) = options.temperature.or(self.default_temperature) {
@@ -159,10 +153,10 @@ impl ChatModel for ChatOpenAI {
             request.top_p = Some(top_p);
         }
         // OpenAI API 的 stop 参数是 String，我们取第一个或合并
-        if let Some(stop) = options.stop {
-            if !stop.is_empty() {
-                request.stop = Some(stop.join(", "));
-            }
+        if let Some(stop) = options.stop
+            && stop.is_empty()
+        {
+            request.stop = Some(stop.join(", "));
         }
 
         if !tools.is_empty() {
@@ -225,7 +219,7 @@ impl ChatModel for ChatOpenAI {
             let mut bytes_stream = response.bytes_stream();
 
             while let Some(chunk) = bytes_stream.next().await {
-                let chunk = chunk.map_err(|e| OpenAIError::Http(e))?;
+                let chunk = chunk.map_err(OpenAIError::Http)?;
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
                 while let Some((event, rest)) = split_sse_event(&buffer) {
