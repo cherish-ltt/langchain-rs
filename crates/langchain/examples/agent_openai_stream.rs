@@ -38,7 +38,10 @@ async fn main() {
         );
 
     let stream = agent
-        .stream(Message::user("计算100和200的和，同时计算999减去800的差"))
+        .stream(
+            Message::user("计算100和200的和，同时计算999减去800的差"),
+            None,
+        )
         .await
         .unwrap();
 

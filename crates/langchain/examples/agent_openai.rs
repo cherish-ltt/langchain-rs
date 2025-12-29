@@ -37,7 +37,10 @@ async fn main() {
         );
 
     let state = agent
-        .invoke(Message::user("计算100和200的和，同时计算999减去800的差"))
+        .invoke(
+            Message::user("计算100和200的和，同时计算999减去800的差"),
+            None,
+        )
         .await
         .unwrap();
 

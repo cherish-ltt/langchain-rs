@@ -11,6 +11,7 @@ use langchain_core::{
     },
 };
 use langgraph::{
+    checkpoint::RunnableConfig,
     graph::GraphError,
     label::{BaseGraphLabel, GraphLabel},
     state_graph::RunStrategy,
@@ -373,7 +374,11 @@ impl ReactAgent {
         self
     }
 
-    pub async fn invoke(&self, message: Message) -> Result<MessagesState, AgentError> {
+    pub async fn invoke(
+        &self,
+        message: Message,
+        config: Option<&RunnableConfig>,
+    ) -> Result<MessagesState, AgentError> {
         let mut state = MessagesState::default();
         if let Some(system_prompt) = &self.system_prompt {
             state.push_message_owned(Message::system(system_prompt.clone()));
@@ -382,15 +387,16 @@ impl ReactAgent {
         let max_steps = 25;
         let (state, _) = self
             .graph
-            .run(state, max_steps, RunStrategy::StopAtNonLinear)
+            .run(state, config, max_steps, RunStrategy::StopAtNonLinear)
             .await?;
         Ok(state)
     }
 
-    pub async fn stream(
-        &self,
+    pub async fn stream<'a>(
+        &'a self,
         message: Message,
-    ) -> Result<impl Stream<Item = ChatStreamEvent> + '_, AgentError> {
+        config: Option<&'a RunnableConfig>,
+    ) -> Result<impl Stream<Item = ChatStreamEvent> + 'a, AgentError> {
         let mut state = MessagesState::default();
         if let Some(system_prompt) = &self.system_prompt {
             state.push_message_owned(Message::system(system_prompt.clone()));
@@ -399,7 +405,7 @@ impl ReactAgent {
         let max_steps = 25;
         let stream = self
             .graph
-            .stream(state, max_steps, RunStrategy::StopAtNonLinear);
+            .stream(state, config, max_steps, RunStrategy::StopAtNonLinear);
 
         Ok(stream)
     }

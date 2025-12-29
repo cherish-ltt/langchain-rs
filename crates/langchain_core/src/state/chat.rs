@@ -25,7 +25,7 @@ pub struct InvokeOptions<'a> {
     pub stop: Option<&'a [String]>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct MessagesState {
     pub messages: Vector<Arc<Message>>,
     pub llm_calls: u32,

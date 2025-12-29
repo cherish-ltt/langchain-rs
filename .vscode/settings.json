@@ -12,6 +12,7 @@
         "reqwest",
         "schemars",
         "serde",
+        "strs",
         "thiserror"
     ],
     "cSpell.enabled": true,

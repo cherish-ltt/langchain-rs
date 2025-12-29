@@ -1,12 +1,15 @@
 use crate::{
+    checkpoint::{Checkpoint, Checkpointer, CheckpointerExt, RunnableConfig},
     event::GraphEvent,
     graph::{Graph, GraphError},
     label::{GraphLabel, InternedGraphLabel},
     node::{EventStream, Node},
 };
 use futures::future::join_all;
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 /// Reducer 函数类型：接收当前状态和更新，返回新状态
 /// (Current State, Update) -> New State
@@ -22,6 +25,7 @@ pub struct StateGraph<S, U, E, Ev: Debug = ()> {
     pub graph: Graph<S, U, E, Ev>,
     pub reducer: Reducer<S, U>,
     pub entry: InternedGraphLabel,
+    pub checkpointer: Option<Arc<dyn Checkpointer>>,
 }
 
 /// 运行策略枚举
@@ -50,12 +54,25 @@ impl<S, U, E: Debug, Ev: Debug> StateGraph<S, U, E, Ev> {
             },
             reducer: Box::new(reducer),
             entry: entry.intern(),
+            checkpointer: None,
         }
     }
 
     /// 设置入口节点
     pub fn set_entry(&mut self, entry: impl GraphLabel) {
         self.entry = entry.intern();
+    }
+
+    /// 设置检查点保存器
+    pub fn with_checkpointer(mut self, checkpointer: impl Checkpointer + 'static) -> Self {
+        self.checkpointer = Some(Arc::new(checkpointer));
+        self
+    }
+
+    /// 设置共享的检查点保存器
+    pub fn with_shared_checkpointer(mut self, checkpointer: Arc<dyn Checkpointer>) -> Self {
+        self.checkpointer = Some(checkpointer);
+        self
     }
 
     /// 添加节点
@@ -89,7 +106,7 @@ impl<S, U, E: Debug, Ev: Debug> StateGraph<S, U, E, Ev> {
 
 impl<S, U, E, Ev: Debug> StateGraph<S, U, E, Ev>
 where
-    S: Send + Sync + Clone + 'static,
+    S: Send + Sync + Clone + 'static + Serialize + DeserializeOwned,
     U: Send + Sync + 'static,
     E: Send + Sync + std::fmt::Debug + 'static,
     Ev: Send + Sync + 'static,
@@ -98,14 +115,61 @@ where
     pub async fn run(
         &self,
         mut state: S,
+        config: Option<&RunnableConfig>,
         max_steps: usize,
         strategy: RunStrategy,
     ) -> Result<(S, Vec<InternedGraphLabel>), GraphError<E>> {
         let mut current_nodes = vec![self.entry];
 
+        // 尝试从 Checkpoint 恢复
+        if let Some(config) = config
+            && let Some(checkpointer) = &self.checkpointer
+            && let Ok(Some(checkpoint)) = checkpointer.get_state::<S>(config).await
+        {
+            tracing::info!("Resuming from checkpoint: {:?}", config);
+            state = checkpoint.state;
+            // 如果 checkpoint 中有下一步节点，则从那里继续
+
+            if !checkpoint.next_nodes.is_empty() {
+                // 这里我们需要一种方法将 String 转回 InternedGraphLabel
+                // 目前系统里没有反向查找表（String -> InternedGraphLabel）。
+                // 这是一个设计缺失。
+                // 临时解决方案：遍历图中所有节点，匹配 as_str()。
+                // 这效率低，但可行。
+                let mut restored_nodes = Vec::new();
+                for node_str in checkpoint.next_nodes {
+                    if let Some((label, _)) = self
+                        .graph
+                        .nodes
+                        .iter()
+                        .find(|(k, _)| k.as_str() == node_str)
+                    {
+                        restored_nodes.push(*label);
+                    } else {
+                        tracing::warn!("Could not find node for checkpoint label: {}", node_str);
+                    }
+                }
+                if !restored_nodes.is_empty() {
+                    current_nodes = restored_nodes;
+                }
+            }
+        }
+
         for _ in 0..max_steps {
             // 如果当前没有活跃节点，图执行结束
             if current_nodes.is_empty() {
+                // Save checkpoint at end
+                if let Some(config) = config
+                    && let Some(checkpointer) = &self.checkpointer
+                {
+                    let checkpoint = Checkpoint {
+                        state: state.clone(),
+                        next_nodes: Vec::new(),
+                    };
+                    if let Err(e) = checkpointer.put_state(config, &checkpoint).await {
+                        tracing::error!("Failed to save checkpoint: {:?}", e);
+                    }
+                }
                 return Ok((state, current_nodes));
             }
 
@@ -130,13 +194,30 @@ where
             }
 
             // 3. 决定下一轮的活跃节点
-            if all_next_nodes.is_empty() {
-                return Ok((state, current_nodes));
-            }
-
             // 去重，防止同一节点被多次触发
             all_next_nodes.sort_unstable();
             all_next_nodes.dedup();
+
+            // Save checkpoint after step
+            if let Some(config) = config
+                && let Some(checkpointer) = &self.checkpointer
+            {
+                let next_node_strs = all_next_nodes
+                    .iter()
+                    .map(|n| n.as_str().to_owned())
+                    .collect();
+                let checkpoint = Checkpoint {
+                    state: state.clone(),
+                    next_nodes: next_node_strs,
+                };
+                if let Err(e) = checkpointer.put_state(config, &checkpoint).await {
+                    tracing::error!("Failed to save checkpoint: {:?}", e);
+                }
+            }
+
+            if all_next_nodes.is_empty() {
+                return Ok((state, Vec::new()));
+            }
 
             match strategy {
                 RunStrategy::StopAtNonLinear => {
@@ -164,6 +245,7 @@ where
     pub fn stream<'a>(
         &'a self,
         mut state: S,
+        config: Option<&'a RunnableConfig>,
         max_steps: usize,
         strategy: RunStrategy,
     ) -> EventStream<'a, Ev> {
@@ -172,10 +254,41 @@ where
         let mut current_nodes = vec![self.entry];
         let graph = &self.graph;
         let reducer = &self.reducer;
+        let checkpointer = &self.checkpointer;
 
         let stream = async_stream::stream! {
+            // 尝试恢复 (逻辑同 run)
+            if let Some(config) = config && let Some(checkpointer) = checkpointer {
+                    // async block in stream is tricky, but here we are in async_stream! macro
+                    // Note: get_state needs S: DeserializeOwned.
+                    // S is bound in impl block.
+                    if let Ok(Some(checkpoint)) = checkpointer.get_state::<S>(config).await {
+                        tracing::info!("Resuming from checkpoint: {:?}", config);
+                        state = checkpoint.state;
+                        if !checkpoint.next_nodes.is_empty() {
+                            let mut restored_nodes = Vec::new();
+                            for node_str in checkpoint.next_nodes {
+                                if let Some((label, _)) = graph.nodes.iter().find(|(k, _)| k.as_str() == node_str) {
+                                    restored_nodes.push(*label);
+                                }
+                            }
+                            if !restored_nodes.is_empty() {
+                                current_nodes = restored_nodes;
+                            }
+                        }
+                    }
+                }
+
             for _ in 0..max_steps {
                 if current_nodes.is_empty() {
+                    // End of graph, save final state
+                    if let Some(config) = config && let Some(checkpointer) = checkpointer {
+                            let checkpoint = Checkpoint {
+                                state: state.clone(),
+                                next_nodes: Vec::new(),
+                            };
+                            let _ = checkpointer.put_state(config, &checkpoint).await;
+                        }
                     break;
                 }
 
@@ -200,7 +313,15 @@ where
                 let mut combined_stream = futures::stream::select_all(streams);
 
                 let mut all_next_nodes = Vec::new();
-                // 暂存 updates，确保在本轮所有事件处理完后统一 apply
+                // 暂存 updates，确保在本轮所有事件处理完后统一 apply，或者实时 apply？
+                // LangGraph Python 是在 Super-step 结束时统一 apply。
+                // 但为了流式体验，我们可能希望尽快看到结果。
+                // 不过为了保持一致性（和 run 方法），我们应该收集 update，最后 apply。
+                // 可是 stream 的 update 往往包含流式 token，如果不实时 apply reducer 可能没法累积？
+                // 不，StateGraph 的 reducer 是针对 (S, U) 的，U 是节点最终输出。
+                // 流式事件 GraphEvent::Streaming 并不直接改变 State S。
+                // 只有 GraphEvent::NodeEnd 里的 output 才会参与 reducer。
+
                 let mut updates = Vec::new();
 
                 while let Some(event_result) = combined_stream.next().await {
@@ -231,17 +352,27 @@ where
                 }
 
                 // 3. 准备下一轮
+                all_next_nodes.sort_unstable();
+                all_next_nodes.dedup();
+
+                // Save Checkpoint
+                if let Some(config) = config && let Some(checkpointer) = checkpointer {
+                        let next_node_strs = all_next_nodes.iter().map(|n| n.as_str().to_owned()).collect();
+                        let checkpoint = Checkpoint {
+                            state: state.clone(),
+                            next_nodes: next_node_strs,
+                        };
+                        let _ = checkpointer.put_state(config, &checkpoint).await;
+                    }
+
                 if all_next_nodes.is_empty() {
                     break;
                 }
 
-                all_next_nodes.sort_unstable();
-                all_next_nodes.dedup();
-
                 match strategy {
                     RunStrategy::StopAtNonLinear => {
                         if all_next_nodes.len() > 1 {
-                            break;
+                             break;
                         }
                         current_nodes = all_next_nodes;
                     }
@@ -412,7 +543,7 @@ mod tests {
         sg.add_edge(TestLabel::A, TestLabel::B);
         sg.add_edge(TestLabel::B, TestLabel::C);
 
-        let (final_state, final_nodes) = sg.run(0, 10, RunStrategy::PickFirst).await.unwrap();
+        let (final_state, final_nodes) = sg.run(0, None, 10, RunStrategy::PickFirst).await.unwrap();
 
         assert_eq!(final_state, 3);
         assert_eq!(final_nodes, vec![TestLabel::C.intern()]);
@@ -437,7 +568,7 @@ mod tests {
             }
         });
 
-        let (final_state, final_nodes) = sg.run(0, 10, RunStrategy::PickFirst).await.unwrap();
+        let (final_state, final_nodes) = sg.run(0, None, 10, RunStrategy::PickFirst).await.unwrap();
 
         assert_eq!(final_state, 2);
         assert_eq!(final_nodes, vec![TestLabel::B.intern()]);
@@ -461,7 +592,8 @@ mod tests {
             }
         });
 
-        let (final_state, final_nodes) = sg.run(-1, 10, RunStrategy::PickFirst).await.unwrap();
+        let (final_state, final_nodes) =
+            sg.run(-1, None, 10, RunStrategy::PickFirst).await.unwrap();
 
         assert_eq!(final_state, 0);
         assert_eq!(final_nodes, vec![TestLabel::A.intern()]);
@@ -509,7 +641,10 @@ mod tests {
         sg.add_edge(TestLabel::A, TestLabel::B);
         sg.add_edge(TestLabel::A, TestLabel::C);
 
-        let (final_state, final_nodes) = sg.run(0, 10, RunStrategy::StopAtNonLinear).await.unwrap();
+        let (final_state, final_nodes) = sg
+            .run(0, None, 10, RunStrategy::StopAtNonLinear)
+            .await
+            .unwrap();
 
         assert_eq!(final_state, 1);
         // Returns [B, C] but since we stop, it returns the next nodes that caused the stop?
@@ -530,7 +665,7 @@ mod tests {
         sg.add_edge(TestLabel::A, TestLabel::B);
         sg.add_edge(TestLabel::A, TestLabel::C);
 
-        let (final_state, final_nodes) = sg.run(0, 10, RunStrategy::PickFirst).await.unwrap();
+        let (final_state, final_nodes) = sg.run(0, None, 10, RunStrategy::PickFirst).await.unwrap();
 
         // B and C are candidates. PickFirst picks B (because B comes first in sort order or insertion order?)
         // HashMap iteration order is random. But we sort_unstable() before dedup.
@@ -551,7 +686,7 @@ mod tests {
         sg.add_edge(TestLabel::A, TestLabel::B);
         sg.add_edge(TestLabel::A, TestLabel::C);
 
-        let (final_state, final_nodes) = sg.run(0, 10, RunStrategy::PickLast).await.unwrap();
+        let (final_state, final_nodes) = sg.run(0, None, 10, RunStrategy::PickLast).await.unwrap();
 
         assert_eq!(final_state, 2);
         // Sorted: B, C. Last is C.
@@ -581,7 +716,7 @@ mod tests {
                 update.parse::<i32>().unwrap()
             });
         sg.add_node(TestLabel::A, StringNode);
-        let (final_state, _) = sg.run(0, 1, RunStrategy::PickFirst).await.unwrap();
+        let (final_state, _) = sg.run(0, None, 1, RunStrategy::PickFirst).await.unwrap();
         assert_eq!(final_state, 1);
     }
 
@@ -613,7 +748,7 @@ mod tests {
         // reducer(1, 2) -> 3.
         // reducer(3, 2) -> 5.
 
-        let (final_state, final_nodes) = sg.run(0, 10, RunStrategy::Parallel).await.unwrap();
+        let (final_state, final_nodes) = sg.run(0, None, 10, RunStrategy::Parallel).await.unwrap();
 
         assert_eq!(final_state, 5);
 
@@ -626,7 +761,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_graph_parallel_multistep() {
+    async fn state_graph_parallel_multi_step() {
         #[derive(Debug, Clone, PartialEq, Eq, Hash, GraphLabel)]
         enum Label {
             A,
@@ -678,8 +813,10 @@ mod tests {
         // Step 2: B, C run. Output "B", "C". State ["A", "B", "C"]. Next [D, E].
         // Step 3: D, E run. Output "D", "E". State ["A", "B", "C", "D", "E"]. Next [].
 
-        let (final_state, final_nodes) =
-            sg.run(Vec::new(), 10, RunStrategy::Parallel).await.unwrap();
+        let (final_state, final_nodes) = sg
+            .run(Vec::new(), None, 10, RunStrategy::Parallel)
+            .await
+            .unwrap();
 
         assert_eq!(final_state, vec!["A", "B", "C", "D", "E"]);
 

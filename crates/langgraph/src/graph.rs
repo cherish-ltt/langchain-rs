@@ -266,7 +266,7 @@ impl<I, O, E: std::fmt::Debug, Ev: std::fmt::Debug> Graph<I, O, E, Ev> {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum GraphError<E> {
     /// 无效的节点标签
-    #[error("node {0:?} dose not exist")]
+    #[error("node {0:?} does not exist")]
     InvalidNode(InternedGraphLabel),
 
     /// 边已存在
