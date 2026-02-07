@@ -2,7 +2,7 @@ name: Rust # 工作流名称，会显示在 GitHub Actions 的列表中
 
 on: # 触发条件
   push: # 当有代码 push 时触发
-    branches: ["main", "dev"] # 在 push 到 main 或 dev 分支时触发
+    branches: ["main"] # 在 push 到 main 或 dev 分支时触发
   pull_request: # 当有 Pull Request 时触发
     branches: ["main"] # 只在目标分支是 main 的 PR 上运行
 
