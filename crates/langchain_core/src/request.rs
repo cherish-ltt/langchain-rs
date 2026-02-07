@@ -203,15 +203,15 @@ impl RequestBody {
 }
 
 /// 响应格式，用于指定模型响应的格式。
-#[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
 pub struct ResponseFormat {
     #[serde(rename = "type")]
-    format_type: FormatType,
+    pub format_type: FormatType,
 
     /// 可选的 JSON Schema 字符串，用于定义响应格式的结构，
     /// 仅在 format_type 为 `json_schema` 时使用。
     #[serde(skip_serializing_if = "Option::is_none")]
-    json_schema: Option<String>,
+    pub json_schema: Option<String>,
 }
 
 impl ResponseFormat {
@@ -259,7 +259,7 @@ pub struct StreamOptions {
     pub include_obfuscation: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
 pub enum FormatType {
     #[serde(rename = "json_object")]
     JsonObject,

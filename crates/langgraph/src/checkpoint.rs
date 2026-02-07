@@ -1,3 +1,4 @@
+use crate::interrupt::Interrupt;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, sync::Arc};
@@ -8,8 +9,6 @@ use tokio::sync::Mutex;
 pub struct RunnableConfig {
     /// 线程 ID，用于隔离不同的对话或执行流
     pub thread_id: String,
-    /// 检查点 ID，可选。如果提供，则加载特定版本的检查点
-    pub checkpoint_id: Option<String>,
 }
 
 /// 检查点数据结构，包含业务状态和执行流位置
@@ -20,49 +19,46 @@ pub struct Checkpoint<S> {
     /// 下一步需要执行的节点 ID 列表
     /// 由于 InternedGraphLabel 无法直接序列化，这里存储字符串形式的 Label
     pub next_nodes: Vec<String>,
-}
-
-/// 序列化后的检查点数据（底层存储格式）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckpointBlob {
-    /// 序列化后的状态数据（JSON 字符串或字节流）
-    /// 这里为了通用性使用 String (JSON)，也可以改为 Vec<u8>
-    pub state: String,
-    /// 下一步节点列表
-    pub next_nodes: Vec<String>,
+    /// 待处理的中断（如果有）
+    pub pending_interrupt: Option<Interrupt>,
 }
 
 /// 检查点保存器接口 (Trait)
 /// 负责持久化存储和加载图的执行状态
+///
+/// S: 状态类型
 #[async_trait]
-pub trait Checkpointer: Send + Sync {
+pub trait Checkpointer<S>: Send + Sync {
     /// 获取最新的检查点
     ///
     /// # 参数
     /// * `config` - 运行配置，包含 thread_id
     ///
     /// # 返回
-    /// * `Option<CheckpointBlob>` - 如果存在则返回序列化后的检查点，否则返回 None
-    async fn get(&self, config: &RunnableConfig) -> Result<Option<CheckpointBlob>, anyhow::Error>;
+    /// * `Option<Checkpoint<S>>` - 如果存在则返回检查点，否则返回 None
+    async fn get(&self, config: &RunnableConfig) -> Result<Option<Checkpoint<S>>, anyhow::Error>;
 
     /// 保存检查点
     ///
     /// # 参数
     /// * `config` - 运行配置
-    /// * `checkpoint` - 序列化后的检查点数据
+    /// * `checkpoint` - 检查点数据
     async fn put(
         &self,
         config: &RunnableConfig,
-        checkpoint: &CheckpointBlob,
+        checkpoint: &Checkpoint<S>,
     ) -> Result<(), anyhow::Error>;
 }
 
 /// 内存实现的检查点保存器 (MemorySaver)
 /// 仅用于开发阶段测试或非持久化场景
+///
+/// 内部存储使用序列化后的 Vec<u8> 以模拟持久化存储的行为，
+/// 同时也允许它支持任何可序列化的状态类型。
 #[derive(Debug, Default, Clone)]
 pub struct MemorySaver {
-    /// 存储结构：thread_id -> CheckpointBlob
-    storage: Arc<Mutex<HashMap<String, CheckpointBlob>>>,
+    /// 存储结构：thread_id -> serialized_checkpoint (Vec<u8>)
+    storage: Arc<Mutex<HashMap<String, Vec<u8>>>>,
 }
 
 impl MemorySaver {
@@ -74,69 +70,29 @@ impl MemorySaver {
 }
 
 #[async_trait]
-impl Checkpointer for MemorySaver {
-    async fn get(&self, config: &RunnableConfig) -> Result<Option<CheckpointBlob>, anyhow::Error> {
+impl<S> Checkpointer<S> for MemorySaver
+where
+    S: Serialize + DeserializeOwned + Send + Sync + 'static,
+{
+    async fn get(&self, config: &RunnableConfig) -> Result<Option<Checkpoint<S>>, anyhow::Error> {
         let storage = self.storage.lock().await;
-        // 目前只支持获取最新版，忽略 checkpoint_id
-        Ok(storage.get(&config.thread_id).cloned())
+        if let Some(data) = storage.get(&config.thread_id) {
+            let checkpoint: Checkpoint<S> = serde_json::from_slice(data)?;
+            Ok(Some(checkpoint))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn put(
         &self,
         config: &RunnableConfig,
-        checkpoint: &CheckpointBlob,
+        checkpoint: &Checkpoint<S>,
     ) -> Result<(), anyhow::Error> {
         let mut storage = self.storage.lock().await;
-        storage.insert(config.thread_id.clone(), checkpoint.clone());
+        let data = serde_json::to_vec(checkpoint)?;
+        storage.insert(config.thread_id.clone(), data);
         Ok(())
-    }
-}
-
-/// 扩展方法：方便在 Checkpointer 和具体的 Checkpoint<S> 之间转换
-#[async_trait]
-pub trait CheckpointerExt {
-    async fn get_state<S: DeserializeOwned + Send>(
-        &self,
-        config: &RunnableConfig,
-    ) -> Result<Option<Checkpoint<S>>, anyhow::Error>;
-
-    async fn put_state<S: Serialize + Send + Sync>(
-        &self,
-        config: &RunnableConfig,
-        checkpoint: &Checkpoint<S>,
-    ) -> Result<(), anyhow::Error>;
-}
-
-#[async_trait]
-impl<T: Checkpointer + ?Sized> CheckpointerExt for T {
-    async fn get_state<S: DeserializeOwned + Send>(
-        &self,
-        config: &RunnableConfig,
-    ) -> Result<Option<Checkpoint<S>>, anyhow::Error> {
-        let blob = self.get(config).await?;
-        match blob {
-            Some(blob) => {
-                let state: S = serde_json::from_str(&blob.state)?;
-                Ok(Some(Checkpoint {
-                    state,
-                    next_nodes: blob.next_nodes,
-                }))
-            }
-            None => Ok(None),
-        }
-    }
-
-    async fn put_state<S: Serialize + Send + Sync>(
-        &self,
-        config: &RunnableConfig,
-        checkpoint: &Checkpoint<S>,
-    ) -> Result<(), anyhow::Error> {
-        let state_json = serde_json::to_string(&checkpoint.state)?;
-        let blob = CheckpointBlob {
-            state: state_json,
-            next_nodes: checkpoint.next_nodes.clone(),
-        };
-        self.put(config, &blob).await
     }
 }
 
@@ -156,7 +112,6 @@ mod tests {
         let saver = MemorySaver::new();
         let config = RunnableConfig {
             thread_id: "thread-1".to_owned(),
-            checkpoint_id: None,
         };
 
         let state = TestState {
@@ -167,13 +122,14 @@ mod tests {
         let checkpoint = Checkpoint {
             state: state.clone(),
             next_nodes: vec!["node_b".to_owned()],
+            pending_interrupt: None,
         };
 
         // Save
-        saver.put_state(&config, &checkpoint).await.unwrap();
+        Checkpointer::put(&saver, &config, &checkpoint).await.unwrap();
 
         // Load
-        let loaded: Option<Checkpoint<TestState>> = saver.get_state(&config).await.unwrap();
+        let loaded: Option<Checkpoint<TestState>> = Checkpointer::get(&saver, &config).await.unwrap();
 
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
@@ -186,25 +142,24 @@ mod tests {
         let saver = MemorySaver::new();
         let config1 = RunnableConfig {
             thread_id: "thread-1".to_owned(),
-            checkpoint_id: None,
         };
         let config2 = RunnableConfig {
             thread_id: "thread-2".to_owned(),
-            checkpoint_id: None,
         };
 
-        saver
-            .put_state(
-                &config1,
-                &Checkpoint {
-                    state: 1,
-                    next_nodes: vec![],
-                },
-            )
-            .await
-            .unwrap();
+        Checkpointer::<i32>::put(
+            &saver,
+            &config1,
+            &Checkpoint {
+                state: 1,
+                next_nodes: vec![],
+                pending_interrupt: None,
+            },
+        )
+        .await
+        .unwrap();
 
-        let loaded2: Option<Checkpoint<i32>> = saver.get_state(&config2).await.unwrap();
+        let loaded2: Option<Checkpoint<i32>> = Checkpointer::get(&saver, &config2).await.unwrap();
         assert!(loaded2.is_none());
     }
 }

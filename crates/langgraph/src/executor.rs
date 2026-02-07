@@ -1,6 +1,7 @@
 use crate::{
     graph::{Graph, GraphError},
     label::InternedGraphLabel,
+    node::NodeContext,
 };
 use std::fmt::Debug;
 
@@ -25,7 +26,10 @@ impl<'g, I, O, E: std::error::Error, Ev: Debug> Executor<'g, I, O, E, Ev> {
         E: Send + Sync + 'static,
         Ev: Send + Sync + 'static,
     {
-        let (output, next) = self.graph.run_once(self.current, input).await?;
+        let (output, next) = self
+            .graph
+            .run_once(self.current, input, NodeContext::empty())
+            .await?;
         if next.len() == 1 {
             self.current = next[0];
         }
@@ -69,7 +73,7 @@ mod test {
         executor::Executor,
         graph::Graph,
         label::GraphLabel,
-        node::{EventSink, Node, NodeError},
+        node::{EventSink, Node, NodeContext, NodeError},
     };
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash, GraphLabel)]
@@ -83,7 +87,7 @@ mod test {
 
     #[async_trait]
     impl Node<i32, i32, NodeError, ()> for IncNode {
-        async fn run_sync(&self, input: &i32) -> Result<i32, NodeError> {
+        async fn run_sync(&self, input: &i32, _context: NodeContext<'_>) -> Result<i32, NodeError> {
             Ok(*input + 1)
         }
 
@@ -91,6 +95,7 @@ mod test {
             &self,
             input: &i32,
             _sink: &mut dyn EventSink<()>,
+            _context: NodeContext<'_>,
         ) -> Result<i32, NodeError> {
             Ok(*input + 1)
         }

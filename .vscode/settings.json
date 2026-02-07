@@ -1,6 +1,7 @@
 {
     "cSpell.words": [
         "Checkpointer",
+        "chrono",
         "deepseek",
         "Deque",
         "docsrs",
@@ -12,6 +13,7 @@
         "reqwest",
         "schemars",
         "serde",
+        "sqlx",
         "strs",
         "thiserror"
     ],

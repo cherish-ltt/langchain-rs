@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo add:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo run:*)",
+      "mcp__zread__get_repo_structure",
+      "Bash(cargo clippy:*)",
+      "Bash(grep:*)",
+      "Bash(cloc:*)",
+      "Bash(find:*)"
+    ]
+  }
+}

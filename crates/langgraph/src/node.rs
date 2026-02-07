@@ -1,12 +1,35 @@
 use std::fmt::Debug;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use downcast_rs::{Downcast, impl_downcast};
 use futures::Stream;
+use langchain_core::store::BaseStore;
 use thiserror::Error;
 
-use crate::{edge::Edge, label::InternedGraphLabel};
+use crate::{checkpoint::RunnableConfig, edge::Edge, label::InternedGraphLabel};
+
+/// 节点执行上下文
+pub struct NodeContext<'a> {
+    /// 共享存储
+    pub store: Option<Arc<dyn BaseStore>>,
+    /// 运行时配置
+    pub config: Option<&'a RunnableConfig>,
+}
+
+impl<'a> NodeContext<'a> {
+    pub fn new(store: Option<Arc<dyn BaseStore>>, config: Option<&'a RunnableConfig>) -> Self {
+        Self { store, config }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            store: None,
+            config: None,
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum NodeError {}
@@ -50,9 +73,14 @@ impl<'a, Ev> Stream for EventStream<'a, Ev> {
 /// * `Ev` - 事件类型
 #[async_trait]
 pub trait Node<I, O, E, Ev>: Downcast + Send + Sync + 'static {
-    async fn run_sync(&self, input: &I) -> Result<O, E>;
+    async fn run_sync(&self, input: &I, context: NodeContext<'_>) -> Result<O, E>;
 
-    async fn run_stream(&self, input: &I, sink: &mut dyn EventSink<Ev>) -> Result<O, E>;
+    async fn run_stream(
+        &self,
+        input: &I,
+        sink: &mut dyn EventSink<Ev>,
+        context: NodeContext<'_>,
+    ) -> Result<O, E>;
 }
 
 impl_downcast!(Node<I, O, E, Ev>);

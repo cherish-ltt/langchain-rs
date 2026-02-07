@@ -23,6 +23,10 @@ pub struct InvokeOptions<'a> {
     pub top_p: Option<f32>,
     /// 停止序列
     pub stop: Option<&'a [String]>,
+    /// 响应格式
+    pub response_format: Option<crate::request::ResponseFormat>,
+    /// 工具选择 (e.g. "auto", "none", "required", or specific function name)
+    pub tool_choice: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

@@ -20,6 +20,8 @@ pub enum Message {
     Assistant {
         /// 消息内容
         content: String,
+        /// 可选填的工具调用列表
+        #[serde(skip_serializing_if = "Option::is_none")]
         tool_calls: Option<Vec<ToolCall>>,
         /// 可选填的消息名称
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,6 +169,20 @@ impl Message {
         Self::Tool {
             content: content.into(),
             tool_call_id: tool_call_id.into(),
+        }
+    }
+
+    /// 获取消息内容的文本形式
+    pub fn content(&self) -> &str {
+        match self {
+            Message::User { content, .. } => match content {
+                Content::Text(s) => s,
+                _ => "",
+            },
+            Message::Assistant { content, .. } => content,
+            Message::System { content, .. } => content,
+            Message::Developer { content, .. } => content,
+            Message::Tool { content, .. } => content,
         }
     }
 }

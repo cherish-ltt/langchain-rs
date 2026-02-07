@@ -18,6 +18,8 @@ schemars = { version = "0.8", features = ["derive"] }
 im = "15.1.0"
 async-stream = "0.3.6"
 futures-util = "0.3.31"
+futures-core = "0.3"
+futures = "0.3"
 
 [workspace.lints.clippy]
 str_to_string = "warn"

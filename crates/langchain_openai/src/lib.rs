@@ -58,8 +58,16 @@ impl ChatModel for ChatOpenAI {
             request.stop = Some(stop.join(", "));
         }
 
+        if let Some(format) = &options.response_format {
+            request.response_format = Some(format.clone());
+        }
+
         if !tools.is_empty() {
             request = request.with_tools(tools);
+        }
+
+        if let Some(tool_choice) = &options.tool_choice {
+            request.tool_choice = Some(tool_choice.clone());
         }
 
         tracing::debug!(

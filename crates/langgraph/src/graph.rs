@@ -8,7 +8,7 @@ use crate::{
     edge::{Edge, EdgeCondition},
     event::GraphEvent,
     label::{GraphLabel, InternedGraphLabel, IntoGraphNodeArray},
-    node::{EventStream, Node, NodeState},
+    node::{EventStream, Node, NodeContext, NodeState},
 };
 
 #[derive(Default)]
@@ -135,6 +135,7 @@ impl<I, O, E: std::fmt::Debug, Ev: std::fmt::Debug> Graph<I, O, E, Ev> {
         &self,
         current: InternedGraphLabel,
         input: &I,
+        context: NodeContext<'_>,
     ) -> Result<(O, Vec<InternedGraphLabel>), GraphError<E>>
     where
         I: Send + Sync + 'static,
@@ -149,7 +150,7 @@ impl<I, O, E: std::fmt::Debug, Ev: std::fmt::Debug> Graph<I, O, E, Ev> {
 
         let output = state
             .node
-            .run_sync(input)
+            .run_sync(input, context)
             .await
             .map_err(GraphError::NodeRunError)?;
 
@@ -162,6 +163,7 @@ impl<I, O, E: std::fmt::Debug, Ev: std::fmt::Debug> Graph<I, O, E, Ev> {
         &'a self,
         current: InternedGraphLabel,
         input: &'a I,
+        context: NodeContext<'a>,
     ) -> Result<EventStream<'a, Result<GraphEvent<Ev, O>, GraphError<E>>>, GraphError<E>>
     where
         I: Send + Sync + 'static,
@@ -193,7 +195,7 @@ impl<I, O, E: std::fmt::Debug, Ev: std::fmt::Debug> Graph<I, O, E, Ev> {
             let (tx, mut rx) = mpsc::channel(100);
             let mut sink = ChannelSink { tx };
 
-            let mut run_future = state.node.run_stream(input, &mut sink);
+            let mut run_future = state.node.run_stream(input, &mut sink, context);
 
             let output_result;
 
@@ -286,7 +288,7 @@ pub enum GraphError<E> {
 mod tests {
     use super::*;
     use crate::label::GraphLabel;
-    use crate::node::{EventSink, Node, NodeError};
+    use crate::node::{EventSink, Node, NodeContext, NodeError};
     use async_trait::async_trait;
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash, GraphLabel)]
@@ -301,7 +303,7 @@ mod tests {
 
     #[async_trait]
     impl Node<i32, i32, NodeError, ()> for IncNode {
-        async fn run_sync(&self, input: &i32) -> Result<i32, NodeError> {
+        async fn run_sync(&self, input: &i32, _context: NodeContext<'_>) -> Result<i32, NodeError> {
             Ok(*input + 1)
         }
 
@@ -309,6 +311,7 @@ mod tests {
             &self,
             input: &i32,
             _sink: &mut dyn EventSink<()>,
+            _context: NodeContext<'_>,
         ) -> Result<i32, NodeError> {
             Ok(*input + 1)
         }
@@ -326,7 +329,7 @@ mod tests {
 
     #[async_trait]
     impl Node<i32, i32, NodeError, i32> for StreamNode {
-        async fn run_sync(&self, input: &i32) -> Result<i32, NodeError> {
+        async fn run_sync(&self, input: &i32, _context: NodeContext<'_>) -> Result<i32, NodeError> {
             Ok(*input + 1)
         }
 
@@ -334,6 +337,7 @@ mod tests {
             &self,
             input: &i32,
             sink: &mut dyn EventSink<i32>,
+            _context: NodeContext<'_>,
         ) -> Result<i32, NodeError> {
             let value = *input + 1;
             sink.emit(1).await;
@@ -489,7 +493,10 @@ mod tests {
         graph.add_node_edge(TestLabel::A, TestLabel::B);
 
         let a_label = TestLabel::A.intern();
-        let mut stream = graph.run_stream(a_label, &0).await.unwrap();
+        let mut stream = graph
+            .run_stream(a_label, &0, NodeContext::empty())
+            .await
+            .unwrap();
 
         let mut events = Vec::new();
         let mut next = Vec::new();
@@ -544,7 +551,10 @@ mod tests {
         graph.add_node_edge(TestLabel::A, TestLabel::B);
 
         let a_label = TestLabel::A.intern();
-        let (output, next) = graph.run_once(a_label, &0).await.unwrap();
+        let (output, next) = graph
+            .run_once(a_label, &0, NodeContext::empty())
+            .await
+            .unwrap();
 
         assert_eq!(output, 1);
         assert_eq!(next, vec![TestLabel::B.intern()]);
@@ -562,7 +572,10 @@ mod tests {
         graph.add_node_edge(TestLabel::A, TestLabel::B);
 
         let a_label = TestLabel::A.intern();
-        let (output, next) = graph.run_once(a_label, &0).await.unwrap();
+        let (output, next) = graph
+            .run_once(a_label, &0, NodeContext::empty())
+            .await
+            .unwrap();
 
         assert_eq!(output, 1);
         assert_eq!(next, vec![TestLabel::B.intern()]);

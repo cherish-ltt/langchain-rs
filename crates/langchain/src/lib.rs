@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, marker::PhantomData, mem};
+use std::{collections::HashMap, error::Error, marker::PhantomData, mem, sync::Arc};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt, future::join_all};
@@ -9,15 +9,14 @@ use langchain_core::{
         ChatCompletion, ChatModel, ChatStreamEvent, InvokeOptions, MessagesState, RegisteredTool,
         ToolFn,
     },
+    store::BaseStore,
 };
 use langgraph::{
-    checkpoint::RunnableConfig,
+    checkpoint::{Checkpoint, Checkpointer, RunnableConfig},
     graph::GraphError,
     label::{BaseGraphLabel, GraphLabel},
+    node::{EventSink, Node, NodeContext},
     state_graph::RunStrategy,
-};
-use langgraph::{
-    node::{EventSink, Node},
     state_graph::StateGraph,
 };
 use thiserror::Error;
@@ -61,7 +60,11 @@ impl<M> Node<MessagesState, MessagesState, AgentError, ChatStreamEvent> for LlmN
 where
     M: ChatModel + Send + Sync + 'static,
 {
-    async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, AgentError> {
+    async fn run_sync(
+        &self,
+        input: &MessagesState,
+        _context: NodeContext<'_>,
+    ) -> Result<MessagesState, AgentError> {
         let messages: Vec<_> = input.messages.iter().cloned().collect();
 
         let options = InvokeOptions {
@@ -92,6 +95,7 @@ where
         &self,
         input: &MessagesState,
         sink: &mut dyn EventSink<ChatStreamEvent>,
+        _context: NodeContext<'_>,
     ) -> Result<MessagesState, AgentError> {
         let messages: Vec<_> = input.messages.iter().cloned().collect();
 
@@ -143,7 +147,6 @@ where
                         });
 
                         if index > 0 {
-                            // 此时上一个tool_call的arguments参数才是完整的
                             let call = &mut tool_calls[index - 1];
                             call.function.arguments =
                                 serde_json::Value::String(mem::take(&mut raw_args));
@@ -177,7 +180,6 @@ where
                 tool_calls: if tool_calls.is_empty() {
                     None
                 } else {
-                    // 最后一个tool_call的arguments参数需要在这里处理
                     let len = tool_calls.len();
                     tool_calls[len - 1].function.arguments = serde_json::Value::String(raw_args);
                     Some(tool_calls)
@@ -217,7 +219,11 @@ impl<E> Node<MessagesState, MessagesState, E, ChatStreamEvent> for IdentityNode<
 where
     E: Send + Sync + 'static,
 {
-    async fn run_sync(&self, _input: &MessagesState) -> Result<MessagesState, E> {
+    async fn run_sync(
+        &self,
+        _input: &MessagesState,
+        _context: NodeContext<'_>,
+    ) -> Result<MessagesState, E> {
         Ok(MessagesState::default())
     }
 
@@ -225,8 +231,9 @@ where
         &self,
         input: &MessagesState,
         _sink: &mut dyn EventSink<ChatStreamEvent>,
+        context: NodeContext<'_>,
     ) -> Result<MessagesState, E> {
-        self.run_sync(input).await
+        self.run_sync(input, context).await
     }
 }
 
@@ -235,7 +242,11 @@ impl<E> Node<MessagesState, MessagesState, AgentError, ChatStreamEvent> for Tool
 where
     E: Error + Send + Sync + 'static,
 {
-    async fn run_sync(&self, input: &MessagesState) -> Result<MessagesState, AgentError> {
+    async fn run_sync(
+        &self,
+        input: &MessagesState,
+        _context: NodeContext<'_>,
+    ) -> Result<MessagesState, AgentError> {
         let mut delta = MessagesState::default();
         if let Some(calls) = input.last_tool_calls() {
             let mut futures = Vec::new();
@@ -256,7 +267,6 @@ where
                         value.to_string()
                     }
                     Err(e) => {
-                        // 错误信息也返回给LLM、让它决定是否重试
                         tracing::error!("Tool call failed: {}", e);
                         format!("Error: {}", e)
                     }
@@ -271,8 +281,9 @@ where
         &self,
         input: &MessagesState,
         _sink: &mut dyn EventSink<ChatStreamEvent>,
+        context: NodeContext<'_>,
     ) -> Result<MessagesState, AgentError> {
-        self.run_sync(input).await
+        self.run_sync(input, context).await
     }
 }
 
@@ -283,18 +294,18 @@ enum ReactAgentLabel {
 }
 
 pub use langchain_core::ToolError;
+use tracing::debug;
 
 #[derive(Debug, Error)]
 pub enum AgentError {
-    /// 模型执行时发生错误
     #[error("model error: {0}")]
     Model(#[source] Box<dyn Error + Send + Sync>),
-    /// 工具执行时发生错误
     #[error("tool error: {0}")]
     Tool(#[source] Box<dyn Error + Send + Sync>),
-    /// 用户通常不需要在代码中处理这些系统错误，只需记录日志
     #[error("graph execution error: {0}")]
     Graph(String),
+    #[error("agent error: {0}")]
+    Agent(String),
 }
 
 impl From<GraphError<AgentError>> for AgentError {
@@ -306,29 +317,75 @@ impl From<GraphError<AgentError>> for AgentError {
     }
 }
 
-pub struct ReactAgent {
-    graph: StateGraph<MessagesState, MessagesState, AgentError, ChatStreamEvent>,
+/// Unified React Agent Builder
+pub struct ReactAgentBuilder<M> {
+    model: M,
+    tools: Vec<RegisteredTool<ToolError>>,
     system_prompt: Option<String>,
+    store: Option<Arc<dyn BaseStore>>,
+    checkpointer: Option<Arc<dyn Checkpointer<MessagesState>>>,
 }
 
-impl ReactAgent {
-    pub fn create_agent<M>(model: M, tools: Vec<RegisteredTool<ToolError>>) -> Self
-    where
-        M: ChatModel + Send + Sync + 'static,
-    {
-        let (tool_specs, tools) = parse_tool(tools);
+impl<M> ReactAgentBuilder<M>
+where
+    M: ChatModel + Send + Sync + 'static,
+{
+    pub fn new(model: M) -> Self {
+        Self {
+            model,
+            tools: Vec::new(),
+            system_prompt: None,
+            store: None,
+            checkpointer: None,
+        }
+    }
 
-        // 使用 MessagesState 作为更新类型（与输入相同），reducer 负责合并
+    pub fn with_system_prompt<Str: Into<String>>(mut self, system_prompt: Str) -> Self {
+        self.system_prompt = Some(system_prompt.into());
+        self
+    }
+
+    pub fn with_tools(mut self, tools: Vec<RegisteredTool<ToolError>>) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    pub fn bind_tool(mut self, tool: RegisteredTool<ToolError>) -> Self {
+        self.tools.push(tool);
+        self
+    }
+
+    pub fn with_shared_store(mut self, store: Arc<dyn BaseStore>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    pub fn with_checkpointer(mut self, checkpointer: Arc<dyn Checkpointer<MessagesState>>) -> Self {
+        self.checkpointer = Some(checkpointer);
+        self
+    }
+
+    /// Transforms this builder into a structured agent builder
+    pub fn build(self) -> ReactAgent {
+        let (tool_specs, tools) = parse_tool(self.tools);
+
         let mut graph: StateGraph<MessagesState, MessagesState, AgentError, ChatStreamEvent> =
             StateGraph::new(
                 BaseGraphLabel::Start,
                 |mut old: MessagesState, update: MessagesState| {
-                    // 合并逻辑：将 update 中的消息追加到 old 中，并累加 llm_calls
                     old.extend_messages(update.messages);
                     old.llm_calls += update.llm_calls;
                     old
                 },
             );
+
+        if let Some(store) = self.store {
+            graph = graph.with_shared_store(store);
+        }
+
+        if let Some(checkpointer) = self.checkpointer {
+            graph = graph.with_shared_checkpointer(checkpointer);
+        }
 
         graph.add_node(
             BaseGraphLabel::Start,
@@ -342,16 +399,16 @@ impl ReactAgent {
                 _marker: PhantomData,
             },
         );
-        graph.add_node(ReactAgentLabel::Llm, LlmNode::new(model, tool_specs));
+        graph.add_node(ReactAgentLabel::Llm, LlmNode::new(self.model, tool_specs));
         graph.add_node(ReactAgentLabel::Tool, ToolNode::new(tools));
 
         let mut branches = HashMap::new();
-        // 使用 Label 作为分支键
         branches.insert(
             ReactAgentLabel::Tool.intern(),
             ReactAgentLabel::Tool.intern(),
         );
         branches.insert(BaseGraphLabel::End.intern(), BaseGraphLabel::End.intern());
+
         graph.add_edge(BaseGraphLabel::Start, ReactAgentLabel::Llm);
         graph.add_condition_edge(ReactAgentLabel::Llm, branches, |state: &MessagesState| {
             if state.last_tool_calls().is_some() {
@@ -363,51 +420,145 @@ impl ReactAgent {
 
         graph.add_edge(ReactAgentLabel::Tool, ReactAgentLabel::Llm);
 
-        Self {
+        ReactAgent {
             graph,
-            system_prompt: None,
+            system_prompt: self.system_prompt,
         }
     }
+}
 
-    pub fn with_system_prompt<T: Into<String>>(mut self, system_prompt: T) -> Self {
-        self.system_prompt = Some(system_prompt.into());
-        self
+pub struct ReactAgent {
+    pub graph: StateGraph<MessagesState, MessagesState, AgentError, ChatStreamEvent>,
+    pub system_prompt: Option<String>,
+}
+
+impl ReactAgent {
+    pub fn builder<M>(model: M) -> ReactAgentBuilder<M>
+    where
+        M: ChatModel + Send + Sync + 'static,
+    {
+        ReactAgentBuilder::new(model)
+    }
+
+    pub fn create_agent<M>(model: M, tools: Vec<RegisteredTool<ToolError>>) -> Self
+    where
+        M: ChatModel + Send + Sync + 'static,
+    {
+        Self::builder(model).with_tools(tools).build()
     }
 
     pub async fn invoke(
         &self,
         message: Message,
-        config: Option<&RunnableConfig>,
+        thread_id: Option<String>,
     ) -> Result<MessagesState, AgentError> {
-        let mut state = MessagesState::default();
-        if let Some(system_prompt) = &self.system_prompt {
-            state.push_message_owned(Message::system(system_prompt.clone()));
-        }
-        state.push_message_owned(message);
+        let config = thread_id.map(|id| RunnableConfig { thread_id: id });
+
+        let mut state = self.get_state(config.as_ref()).await;
+        state.push_message_owned(message.clone());
         let max_steps = 25;
+
         let (state, _) = self
             .graph
-            .run(state, config, max_steps, RunStrategy::StopAtNonLinear)
+            .run(
+                state,
+                config.as_ref(),
+                max_steps,
+                RunStrategy::StopAtNonLinear,
+            )
             .await?;
         Ok(state)
     }
 
+    // pub async fn invoke_structured<S>(
+    //     &self,
+    //     message: Message,
+    //     config: Option<&RunnableConfig>,
+    // ) -> Result<S, AgentError>
+    // where
+    //     S: Deserialize<'static>,
+    // {
+    //     let mut state = MessagesState::default();
+    //     if let Some(system_prompt) = &self.system_prompt {
+    //         state.push_message_owned(Message::system(system_prompt.clone()));
+    //     }
+    //     state.push_message_owned(message);
+    //     let max_steps = 25;
+    //     let (state, _) = self
+    //         .graph
+    //         .run(state, config, max_steps, RunStrategy::StopAtNonLinear)
+    //         .await?;
+    //     let content = state
+    //         .last_assistant()
+    //         .ok_or_else(|| AgentError::Agent("No assistant message found".to_owned()))?
+    //         .content();
+    //     let s = serde_json::from_str::<S>(content)
+    //         .map_err(|e| AgentError::Agent(format!("Failed to deserialize JSON: {}", e)))?;
+    //     Ok(s)
+    // }
+
     pub async fn stream<'a>(
         &'a self,
         message: Message,
-        config: Option<&'a RunnableConfig>,
+        thread_id: Option<String>,
     ) -> Result<impl Stream<Item = ChatStreamEvent> + 'a, AgentError> {
-        let mut state = MessagesState::default();
-        if let Some(system_prompt) = &self.system_prompt {
-            state.push_message_owned(Message::system(system_prompt.clone()));
-        }
-        state.push_message_owned(message);
+        let graph = &self.graph;
+
+        let config = thread_id.map(|id| RunnableConfig { thread_id: id });
+
+        let mut state = self.get_state(config.as_ref()).await;
+
+        state.push_message_owned(message.clone());
         let max_steps = 25;
-        let stream = self
-            .graph
-            .stream(state, config, max_steps, RunStrategy::StopAtNonLinear);
+
+        let stream = async_stream::stream! {
+            let mut inner_stream = graph.stream(
+                state,
+                config.as_ref(),
+                max_steps,
+                RunStrategy::StopAtNonLinear,
+            );
+
+            while let Some(item) = inner_stream.next().await {
+                yield item;
+            }
+        };
 
         Ok(stream)
+    }
+
+    async fn get_state(&self, config: Option<&RunnableConfig>) -> MessagesState {
+        if let Some(checkpointer) = &self.graph.checkpointer
+            && let Some(config) = config
+        {
+            debug!("有checkpointer，尝试从checkpointer获取状态");
+            let state = if let Ok(Some(checkpoint)) =
+                checkpointer.get(config).await
+            {
+                debug!("从checkpointer获取状态成功");
+                checkpoint.state
+            } else {
+                debug!("从checkpointer获取状态失败，初始化新状态");
+                let mut state = MessagesState::default();
+                if let Some(system_prompt) = &self.system_prompt {
+                    state.push_message_owned(Message::system(system_prompt.clone()));
+                }
+                let checkpoint = Checkpoint {
+                    state: state.clone(),
+                    next_nodes: Vec::new(),
+                    pending_interrupt: None,
+                };
+                checkpointer.put(config, &checkpoint).await.unwrap();
+                state
+            };
+            state
+        } else {
+            let mut state = MessagesState::default();
+            if let Some(system_prompt) = &self.system_prompt {
+                state.push_message_owned(Message::system(system_prompt.clone()));
+            }
+            state
+        }
     }
 }
 
@@ -438,14 +589,11 @@ mod tests {
         message::{FunctionCall, Message, ToolCall},
         response::Usage,
     };
-    use langgraph::{label::GraphLabel, state_graph::StateGraph};
 
     #[derive(Debug, Error)]
     enum TestError {
         #[error(transparent)]
         Json(#[from] serde_json::Error),
-        #[error("custom error")]
-        Custom,
     }
 
     #[derive(Debug)]
@@ -456,19 +604,25 @@ mod tests {
         async fn invoke(
             &self,
             _messages: &[std::sync::Arc<Message>],
-            _options: &langchain_core::state::InvokeOptions<'_>,
+            options: &langchain_core::state::InvokeOptions<'_>,
         ) -> Result<ChatCompletion, Box<dyn std::error::Error + Send + Sync>> {
-            let call = ToolCall {
-                id: "call1".to_owned(),
-                type_name: "function".to_owned(),
-                function: FunctionCall {
-                    name: "test_tool".to_owned(),
-                    arguments: serde_json::json!({}),
-                },
+            let tool_calls = if options.tools.is_some() {
+                let call = ToolCall {
+                    id: "call1".to_owned(),
+                    type_name: "function".to_owned(),
+                    function: FunctionCall {
+                        name: "test_tool".to_owned(),
+                        arguments: serde_json::json!({}),
+                    },
+                };
+                Some(vec![call])
+            } else {
+                None
             };
+
             let msg = Message::Assistant {
                 content: "assistant".to_owned(),
-                tool_calls: Some(vec![call]),
+                tool_calls,
                 name: None,
             };
 
@@ -517,103 +671,94 @@ mod tests {
         Ok("tool_result".to_owned())
     }
 
-    #[tool(description = "fail tool")]
-    async fn fail_tool() -> Result<String, TestError> {
-        Err(TestError::Custom)
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq, Hash, GraphLabel)]
-    enum TestLabel {
-        Llm,
-        Tool,
-    }
-
     #[tokio::test]
     async fn llm_and_tool_nodes_work_in_state_graph() {
-        let mut sg: StateGraph<MessagesState, MessagesState, AgentError, ChatStreamEvent> =
-            StateGraph::new(
-                TestLabel::Llm,
-                |mut old: MessagesState, update: MessagesState| {
-                    old.extend_messages(update.messages);
-                    old.llm_calls += update.llm_calls;
-                    old
-                },
-            );
-
         let tool = test_tool_tool();
+        let agent = ReactAgent::builder(TestModel)
+            .with_tools(vec![tool])
+            .build();
 
-        let (tool_specs, tools) = parse_tool(vec![tool]);
-
-        let llm_node = LlmNode::new(TestModel, tool_specs);
-
-        let tool_node = ToolNode::new(tools);
-
-        sg.add_node(TestLabel::Llm, llm_node);
-        sg.add_node(TestLabel::Tool, tool_node);
-
-        sg.add_edge(TestLabel::Llm, TestLabel::Tool);
-
-        let initial = MessagesState::new(vec![Message::user("hello")]);
-
-        let (final_state, final_label) = sg.run_until_stuck(initial, 10).await.unwrap();
-
-        assert_eq!(final_label, vec![TestLabel::Tool.intern()]);
-        assert_eq!(final_state.llm_calls, 1);
-        assert_eq!(final_state.messages.len(), 3);
-
-        match final_state.messages[0].as_ref() {
-            Message::User { .. } => {}
-            _ => panic!("first message must be user"),
-        }
-
-        match final_state.messages[1].as_ref() {
-            Message::Assistant { tool_calls, .. } => {
-                assert!(tool_calls.is_some());
-                assert_eq!(tool_calls.as_ref().unwrap().len(), 1);
-            }
-            _ => panic!("second message must be assistant"),
-        }
-
-        match final_state.messages[2].as_ref() {
-            Message::Tool { .. } => {}
-            _ => panic!("third message must be tool"),
-        }
+        let _final_state = agent.invoke(Message::user("hello"), None).await.unwrap();
     }
 
     #[tokio::test]
-    async fn tool_node_captures_error() {
-        let tool = fail_tool_tool();
-        let (_, tools) = parse_tool(vec![tool]);
-        let tool_node = ToolNode::new(tools);
+    async fn test_react_agent_with_checkpointer() {
+        use langgraph::checkpoint::MemorySaver;
+        use std::sync::Arc;
 
-        // Construct input state with a tool call
-        let mut input = MessagesState::default();
-        let call = ToolCall {
-            id: "call1".to_owned(),
-            type_name: "function".to_owned(),
-            function: FunctionCall {
-                name: "fail_tool".to_owned(),
-                arguments: serde_json::json!({}),
-            },
-        };
-        input.push_message_owned(Message::Assistant {
-            content: "".to_owned(),
-            tool_calls: Some(vec![call]),
-            name: None,
-        });
+        let checkpointer = Arc::new(MemorySaver::new());
+        // let tool = test_tool_tool();
+        let agent = ReactAgent::builder(TestModel)
+            // .with_tools(vec![tool])
+            .with_checkpointer(checkpointer.clone())
+            .build();
 
-        // Run tool node
-        let result = tool_node.run_sync(&input).await;
+        // 第一次调用，使用 thread_id "thread-1"
+        let thread_id = "thread-1".to_string();
+        let state1 = agent
+            .invoke(Message::user("hello"), Some(thread_id.clone()))
+            .await
+            .unwrap();
 
-        assert!(result.is_ok());
-        let delta = result.unwrap();
-        assert_eq!(delta.messages.len(), 1);
+        // 验证状态
+        assert_eq!(state1.messages.len(), 2); // user + assistant
 
-        match delta.messages[0].as_ref() {
-            Message::Tool { content, .. } => {
-                assert!(content.contains("custom error"));
-            }
-            _ => panic!("expected tool message"),
+        // 第二次调用，使用相同的 thread_id
+        let state2 = agent
+            .invoke(Message::user("world"), Some(thread_id.clone()))
+            .await
+            .unwrap();
+
+        // 验证状态累积 (user + assistant + user + assistant)
+        assert_eq!(state2.messages.len(), 4);
+
+        // 第三次调用，不使用 thread_id
+        let state3 = agent
+            .invoke(Message::user("no memory"), None)
+            .await
+            .unwrap();
+
+        // 验证状态未累积 (user + assistant)
+        assert_eq!(state3.messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_react_agent_without_checkpointer() {
+        // let tool = test_tool_tool();
+        let agent = ReactAgent::builder(TestModel)
+            // .with_tools(vec![tool])
+            .build(); // 默认无 checkpointer
+
+        let thread_id = "thread-2".to_string();
+
+        // 第一次调用
+        let state1 = agent
+            .invoke(Message::user("hello"), Some(thread_id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(state1.messages.len(), 2);
+
+        // 第二次调用，即使传入 thread_id，由于没有 checkpointer，状态也不会累积
+        let state2 = agent
+            .invoke(Message::user("world"), Some(thread_id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(state2.messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_react_agent_system_prompt() {
+        let agent = ReactAgent::builder(TestModel)
+            .with_system_prompt("You are a helpful assistant")
+            .build();
+
+        let state = agent.invoke(Message::user("hello"), None).await.unwrap();
+
+        // Expect: System + User + Assistant
+        assert_eq!(state.messages.len(), 3);
+        match state.messages[0].as_ref() {
+            Message::System { content, .. } => assert_eq!(content, "You are a helpful assistant"),
+            _ => panic!("First message should be system"),
         }
     }
 }

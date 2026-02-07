@@ -1,0 +1,361 @@
+langchain-rs 架构图
+=====================================
+
+1. 整体层次结构
+=====================================
+
+┌──────────────────────────────────────────────────────────┐
+│                     应用层 (用户代码)                      │
+│                                                           │
+│  • 定义工具 (#[tool])                                      │
+│  • 创建 Agent (ReactAgent::create_agent)                  │
+│  • 执行调用 (agent.invoke / agent.stream)                 │
+└──────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────┐
+│              langchain (高层 Agent 框架)                  │
+│                                                           │
+│  ┌─────────────────────────────────────────────┐         │
+│  │  ReactAgent                                  │         │
+│  │  ┌─────────────────────────────────────┐    │         │
+│  │  │ LlmNode<M>   ToolNode<E>            │    │         │
+│  │  │   │             │                   │    │         │
+│  │  │   └────ReAct 循环────┘              │    │         │
+│  │  └─────────────────────────────────────┘    │         │
+│  └─────────────────────────────────────────────┘         │
+└──────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────┐
+│                langgraph (图执行引擎)                     │
+│                                                           │
+│  ┌─────────────────────────────────────────────┐         │
+│  │  Graph<I,O,E,Ev>                             │         │
+│  │  StateGraph<S,U,E,Ev>                        │         │
+│  │  RunStrategy                                 │         │
+│  │  ┌─────────────────────────────────────┐    │         │
+│  │  │ GraphLabel (标签系统 + 内化)        │    │         │
+│  │  │ Node trait (同步/流式)              │    │         │
+│  │  │ Checkpointer (检查点)               │    │         │
+│  │  └─────────────────────────────────────┘    │         │
+│  └─────────────────────────────────────────────┘         │
+└──────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────┐
+│             langchain_core (核心抽象层)                   │
+│                                                           │
+│  ┌─────────────────────────────────────────────┐         │
+│  │  Message (消息类型系统)                      │         │
+│  │  MessagesState (状态管理)                   │         │
+│  │  ChatModel trait (LLM 抽象)                │         │
+│  │  RegisteredTool (工具注册)                  │         │
+│  │  #[tool] 宏 (工具生成)                      │         │
+│  └─────────────────────────────────────────────┘         │
+└──────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────────┐
+│             langchain_openai (OpenAI 实现)                │
+│                                                           │
+│  ┌─────────────────────────────────────────────┐         │
+│  │  ChatOpenAI                                  │         │
+│  │  ┌─────────────────────────────────────┐    │         │
+│  │  │ ChatModel trait 实现                │    │         │
+│  │  │ HTTP 客户端 (reqwest)               │    │         │
+│  │  │ SSE 流式解析                         │    │         │
+│  │  └─────────────────────────────────────┘    │         │
+│  └─────────────────────────────────────────────┘         │
+└──────────────────────────────────────────────────────────┘
+
+
+2. ReAct Agent 执行流程
+=====================================
+
+用户消息
+   │
+   ▼
+┌─────────┐
+│  START  │
+└────┬────┘
+     │
+     ▼
+┌──────────────────────────────────────┐
+│          LlmNode                     │
+│  ┌────────────────────────────────┐  │
+│  │ 1. 收集历史消息                │  │
+│  │ 2. 调用 ChatModel.invoke()     │  │
+│  │ 3. 解析响应                    │  │
+│  │ 4. 检查 tool_calls             │  │
+│  └────────────────────────────────┘  │
+└───────┬──────────────────────────────┘
+        │
+        │ 有 tool_calls?
+        │
+        ├─ YES ──────────┐
+        │                ▼
+        │    ┌────────────────────────────────┐
+        │    │       ToolNode                 │
+        │    │  ┌──────────────────────────┐  │
+        │    │  │ 并行执行所有工具调用      │  │
+        │    │  │ try_join_all(futures)    │  │
+        │    │  │ 错误返回给 LLM            │  │
+        │    │  └──────────────────────────┘  │
+        │    └────────────┬───────────────────┘
+        │                 │
+        │                 ▼ (循环回 LLM)
+        │         ┌───────────────┐
+        │         │   LlmNode     │
+        │         └───────────────┘
+        │                 │
+        └─────────────────┘
+                          │
+                          ▼
+                     NO tool_calls
+                          │
+                          ▼
+                   ┌──────────┐
+                   │   END    │
+                   └──────────┘
+
+
+3. 消息流示例
+=====================================
+
+用户: "北京天气怎么样？"
+
+┌─────────────────────────────────────────────────────┐
+│ Message[0]: User                                    │
+│   content: "北京天气怎么样？"                        │
+└─────────────────────────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│ Message[1]: Assistant                               │
+│   content: ""                                       │
+│   tool_calls: [                                     │
+│     {                                               │
+│       id: "call_123",                               │
+│       function: {                                   │
+│         name: "get_weather",                        │
+│         arguments: '{"city": "北京"}'              │
+│       }                                             │
+│     }                                               │
+│   ]                                                 │
+│                                                     │
+│   llm_calls: 1                                      │
+└─────────────────────────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│ Message[2]: Tool                                    │
+│   tool_call_id: "call_123"                          │
+│   content: "北京 的天气是晴天"                      │
+└─────────────────────────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│ Message[3]: Assistant                               │
+│   content: "北京今天天气晴朗，适合出行！"           │
+│   tool_calls: null                                  │
+│                                                     │
+│   llm_calls: 2                                      │
+└─────────────────────────────────────────────────────┘
+
+
+4. 图执行状态机
+=====================================
+
+run(state, max_steps=25, strategy=StopAtNonLinear)
+   │
+   ├─→ step 1: run_once(Start, state)
+   │     └─→ successors: [Llm]
+   │
+   ├─→ step 2: run_once(Llm, state)
+   │     ├─→ 执行 LlmNode
+   │     ├─→ 生成 delta (Assistant 消息)
+   │     ├─→ 合并状态: new_state = reducer(old, delta)
+   │     └─→ successors: [Tool] (有 tool_calls)
+   │
+   ├─→ step 3: run_once(Tool, state)
+   │     ├─→ 执行 ToolNode
+   │     ├─→ 并行执行工具
+   │     ├─→ 生成 delta (Tool 消息)
+   │     ├─→ 合并状态
+   │     └─→ successors: [Llm] (固定边)
+   │
+   ├─→ step 4: run_once(Llm, state)
+   │     ├─→ 执行 LlmNode
+   │     ├─→ 生成 delta (Assistant 消息)
+   │     └─→ successors: [End] (无 tool_calls)
+   │
+   ├─→ step 5: run_once(End, state)
+   │     └─→ successors: []
+   │
+   └─→ 完成: 无后继节点
+
+
+5. 类型系统关系
+=====================================
+
+Message (枚举)
+ ├─ User { content, name? }
+ ├─ Assistant { content, tool_calls?, name? }
+ ├─ System { content, name? }
+ ├─ Developer { content, name? }
+ └─ Tool { tool_call_id, content }
+
+MessagesState (状态)
+ ├─ messages: Vector<Arc<Message>>
+ └─ llm_calls: u32
+
+ChatModel (trait)
+ ├─ invoke() -> ChatCompletion
+ └─ stream() -> StandardChatStream
+
+ChatCompletion
+ ├─ messages: Vec<Arc<Message>>
+ └─ usage: Usage
+
+ChatStreamEvent (枚举)
+ ├─ Content(String)
+ ├─ ToolCallDelta { index, id, type_name, name, arguments }
+ └─ Done { finish_reason, usage? }
+
+Node<I,O,E,Ev> (trait)
+ ├─ run_sync(input) -> Result<O, E>
+ └─ run_stream(input, sink) -> Result<O, E>
+
+GraphLabel (trait)
+ ├─ as_str() -> &str
+ ├─ dyn_clone() -> Box<dyn GraphLabel>
+ └─ intern() -> InternedGraphLabel
+
+
+6. 依赖注入流程
+=====================================
+
+ChatOpenAI
+   │
+   ├─ 实现 ChatModel trait
+   │
+   ▼
+LlmNode<ChatOpenAI>
+   │
+   ├─ 包装 ChatOpenAI
+   ├─ 添加工具列表 Vec<ToolSpec>
+   │
+   ▼
+实现 Node<MessagesState, MessagesState, AgentError, ChatStreamEvent>
+   │
+   ├─ 可添加到 StateGraph
+   │
+   ▼
+ReactAgent
+   │
+   ├─ 创建图结构
+   ├─ 添加边和条件边
+   │
+   ▼
+用户代码
+   │
+   └─ agent.invoke(Message::user("..."))
+
+
+7. 流式处理架构
+=====================================
+
+agent.stream(message)
+   │
+   ▼
+StateGraph::stream()
+   │
+   ▼
+EventStream<'a, ChatStreamEvent>
+   │
+   ├─→ ChatStreamEvent::Content("北京")
+   ├─→ ChatStreamEvent::Content("今天")
+   ├─→ ChatStreamEvent::Content("天气")
+   ├─→ ChatStreamEvent::Content("晴朗")
+   ├─→ ChatStreamEvent::ToolCallDelta { ... }
+   ├─→ ChatStreamEvent::Done { ... }
+   │
+   ▼
+用户通过 Stream<Item=ChatStreamEvent> 消费
+
+
+8. 错误处理流程
+=====================================
+
+ToolNode 执行工具
+   │
+   ├─→ 成功
+   │     └─→ Message::Tool { content: "结果" }
+   │
+   └─→ 失败
+         └─→ Message::Tool { content: "Error: ..." }
+              │
+              ▼
+         LlmNode 收到错误消息
+              │
+              ▼
+         ChatModel 决定是否重试
+              │
+              ├─→ 重试: 生成新的 tool_calls
+              └─→ 放弃: 生成最终回复
+
+
+9. 标签内化系统
+=====================================
+
+GraphLabel trait
+   │
+   ├─ as_str() -> &str
+   ├─ dyn_clone() -> Box<dyn GraphLabel>
+   ├─ dyn_eq() -> bool
+   └─ dyn_hash() -> u64
+         │
+         ▼
+#[derive(GraphLabel)]
+enum MyLabel { A, B }
+         │
+         ▼
+MyLabel::A.intern()
+         │
+         ├─→ 第一次: 存入全局 Interner
+         │   └─→ 返回 &'static GraphLabelDyn
+         │
+         └─→ 后续: 直接返回缓存的指针
+              └─→ 比较只需指针比较 (O(1))
+
+
+10. 执行策略模式
+=====================================
+
+RunStrategy::StopAtNonLinear
+   │
+   └─→ successors.len() != 1
+         └─→ 停止执行，返回所有后继
+
+RunStrategy::PickFirst
+   │
+   └─→ successors.len() != 1
+         └─→ 选择第一个后继继续执行
+
+RunStrategy::PickLast
+   │
+   └─→ successors.len() != 1
+         └─→ 选择最后一个后继继续执行
+
+RunStrategy::Parallel
+   │
+   └─→ successors.len() != 1
+         └─→ 并行执行所有后继
+              └─→ 收集所有结果
+
+
+=====================================
+生成时间: 2025-12-27
+框架版本: langchain-rs (dev branch)
+=====================================
