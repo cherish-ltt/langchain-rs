@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt, future::join_all};
 use langchain_core::{
     message::{FunctionCall, Message, ToolCall},
-    request::ToolSpec,
+    request::{FormatType, ToolSpec},
     state::{
-        ChatCompletion, ChatModel, ChatStreamEvent, InvokeOptions, MessagesState, RegisteredTool,
-        ToolFn,
+        AgentState, ChatCompletion, ChatModel, ChatStreamEvent, InvokeOptions, MessagesState,
+        RegisteredTool, ToolFn,
     },
     store::BaseStore,
 };
@@ -63,7 +63,7 @@ where
     async fn run_sync(
         &self,
         input: &MessagesState,
-        _context: NodeContext<'_>,
+        context: NodeContext<'_>,
     ) -> Result<MessagesState, AgentError> {
         let messages: Vec<_> = input.messages.iter().cloned().collect();
 
@@ -75,6 +75,23 @@ where
             },
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            response_format: if let Some(config) = context.config
+                && let Some(mode) = &config.mode
+            {
+                match mode {
+                    FormatType::JsonSchema => Some(langchain_core::request::ResponseFormat {
+                        format_type: langchain_core::request::FormatType::JsonSchema,
+                        json_schema: None,
+                    }),
+                    FormatType::JsonObject => Some(langchain_core::request::ResponseFormat {
+                        format_type: langchain_core::request::FormatType::JsonObject,
+                        json_schema: None,
+                    }),
+                    _ => None,
+                }
+            } else {
+                None
+            },
             ..Default::default()
         };
 
@@ -306,6 +323,8 @@ pub enum AgentError {
     Graph(String),
     #[error("agent error: {0}")]
     Agent(String),
+    #[error("structured output error: {0}")]
+    StructuredOutput(String),
 }
 
 impl From<GraphError<AgentError>> for AgentError {
@@ -452,7 +471,10 @@ impl ReactAgent {
         message: Message,
         thread_id: Option<String>,
     ) -> Result<MessagesState, AgentError> {
-        let config = thread_id.map(|id| RunnableConfig { thread_id: id });
+        let config = thread_id.map(|id| RunnableConfig {
+            thread_id: id,
+            mode: None,
+        });
 
         let mut state = self.get_state(config.as_ref()).await;
         state.push_message_owned(message.clone());
@@ -467,35 +489,51 @@ impl ReactAgent {
                 RunStrategy::StopAtNonLinear,
             )
             .await?;
+
         Ok(state)
     }
 
-    // pub async fn invoke_structured<S>(
-    //     &self,
-    //     message: Message,
-    //     config: Option<&RunnableConfig>,
-    // ) -> Result<S, AgentError>
-    // where
-    //     S: Deserialize<'static>,
-    // {
-    //     let mut state = MessagesState::default();
-    //     if let Some(system_prompt) = &self.system_prompt {
-    //         state.push_message_owned(Message::system(system_prompt.clone()));
-    //     }
-    //     state.push_message_owned(message);
-    //     let max_steps = 25;
-    //     let (state, _) = self
-    //         .graph
-    //         .run(state, config, max_steps, RunStrategy::StopAtNonLinear)
-    //         .await?;
-    //     let content = state
-    //         .last_assistant()
-    //         .ok_or_else(|| AgentError::Agent("No assistant message found".to_owned()))?
-    //         .content();
-    //     let s = serde_json::from_str::<S>(content)
-    //         .map_err(|e| AgentError::Agent(format!("Failed to deserialize JSON: {}", e)))?;
-    //     Ok(s)
-    // }
+    pub async fn invoke_structured<S>(
+        &self,
+        message: Message,
+        thread_id: Option<String>,
+    ) -> Result<AgentState<MessagesState, S>, AgentError>
+    where
+        S: serde::de::DeserializeOwned,
+    {
+        let config = thread_id.map(|id| RunnableConfig {
+            thread_id: id,
+            mode: Some(FormatType::JsonObject),
+        });
+
+        let mut state = self.get_state(config.as_ref()).await;
+        state.push_message_owned(message.clone());
+        let max_steps = 25;
+
+        let (state, _) = self
+            .graph
+            .run(
+                state,
+                config.as_ref(),
+                max_steps,
+                RunStrategy::StopAtNonLinear,
+            )
+            .await?;
+
+        let content = state
+            .last_assistant()
+            .ok_or_else(|| AgentError::Agent("No assistant message in state".to_owned()))?
+            .content();
+
+        let output: S = serde_json::from_str(content).map_err(|e| {
+            AgentError::StructuredOutput(format!("Failed to parse structured output: {}", e))
+        })?;
+
+        Ok(AgentState {
+            state,
+            struct_output: Some(output),
+        })
+    }
 
     pub async fn stream<'a>(
         &'a self,
@@ -504,7 +542,10 @@ impl ReactAgent {
     ) -> Result<impl Stream<Item = ChatStreamEvent> + 'a, AgentError> {
         let graph = &self.graph;
 
-        let config = thread_id.map(|id| RunnableConfig { thread_id: id });
+        let config = thread_id.map(|id| RunnableConfig {
+            thread_id: id,
+            mode: None,
+        });
 
         let mut state = self.get_state(config.as_ref()).await;
 

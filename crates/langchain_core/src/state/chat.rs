@@ -29,6 +29,21 @@ pub struct InvokeOptions<'a> {
     pub tool_choice: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AgentState<State, Output> {
+    pub state: State,
+    pub struct_output: Option<Output>,
+}
+
+impl<State, Output> AgentState<State, Output> {
+    pub fn new(state: State, struct_output: Option<Output>) -> Self {
+        Self {
+            state,
+            struct_output,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct MessagesState {
     pub messages: Vector<Arc<Message>>,

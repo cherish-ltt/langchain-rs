@@ -259,7 +259,7 @@ pub struct StreamOptions {
     pub include_obfuscation: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Eq, Hash, Clone)]
 pub enum FormatType {
     #[serde(rename = "json_object")]
     JsonObject,

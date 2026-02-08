@@ -1,5 +1,6 @@
 use crate::interrupt::Interrupt;
 use async_trait::async_trait;
+use langchain_core::request::FormatType;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
@@ -9,6 +10,7 @@ use tokio::sync::Mutex;
 pub struct RunnableConfig {
     /// 线程 ID，用于隔离不同的对话或执行流
     pub thread_id: String,
+    pub mode: Option<FormatType>,
 }
 
 /// 检查点数据结构，包含业务状态和执行流位置
@@ -112,6 +114,7 @@ mod tests {
         let saver = MemorySaver::new();
         let config = RunnableConfig {
             thread_id: "thread-1".to_owned(),
+            mode: None,
         };
 
         let state = TestState {
@@ -126,10 +129,13 @@ mod tests {
         };
 
         // Save
-        Checkpointer::put(&saver, &config, &checkpoint).await.unwrap();
+        Checkpointer::put(&saver, &config, &checkpoint)
+            .await
+            .unwrap();
 
         // Load
-        let loaded: Option<Checkpoint<TestState>> = Checkpointer::get(&saver, &config).await.unwrap();
+        let loaded: Option<Checkpoint<TestState>> =
+            Checkpointer::get(&saver, &config).await.unwrap();
 
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
@@ -142,9 +148,11 @@ mod tests {
         let saver = MemorySaver::new();
         let config1 = RunnableConfig {
             thread_id: "thread-1".to_owned(),
+            mode: None,
         };
         let config2 = RunnableConfig {
             thread_id: "thread-2".to_owned(),
+            mode: None,
         };
 
         Checkpointer::<i32>::put(
