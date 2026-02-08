@@ -7,7 +7,6 @@ pub mod request;
 pub mod response;
 pub mod state;
 pub mod store;
-pub mod structured_output;
 
 pub use error::{
     ErrorCategory, GraphError, LangChainError, ModelError, RetryConfig, StorageError, ToolError,
