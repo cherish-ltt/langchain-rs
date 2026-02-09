@@ -5,11 +5,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 
-/// 运行配置，用于标识 Checkpoint 的唯一性（如线程ID）
+/// 运行配置
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RunnableConfig {
     /// 线程 ID，用于隔离不同的对话或执行流
     pub thread_id: Option<String>,
+    /// 响应格式
     pub response_format: Option<ResponseFormat>,
 }
 
