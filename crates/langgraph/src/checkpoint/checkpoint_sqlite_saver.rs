@@ -27,7 +27,7 @@ pub struct SqliteSaverConfig {
 impl Default for SqliteSaverConfig {
     fn default() -> Self {
         Self {
-            database_path: "sqlite://data/checkoutpoint.db".to_owned(),
+            database_path: "data/checkoutpoint.db".to_owned(),
             pool_size: 3,
             auto_create_table: true,
         }
