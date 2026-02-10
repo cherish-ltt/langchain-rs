@@ -54,10 +54,15 @@ pub trait Checkpointer<S>: Send + Sync {
     ) -> Result<Option<String>, CheckpointError>;
 
     // 获取指定检查点的元数据
-    // async fn get_metadata_parent_id_by_thread_id(
-    //     &self,
-    //     thread_id: &str,
-    // ) -> Result<Option<String>, CheckpointError>;
+    async fn get_metadata_parent_id_by_thread_id(&self, thread_id: &str) -> Option<String> {
+        if let Ok(checkpoint) = self.get(thread_id).await
+            && let Some(checkpoint) = checkpoint
+        {
+            checkpoint.metadata.parent_id
+        } else {
+            None
+        }
+    }
 
     // ========== 版本管理 ==========
 
@@ -103,6 +108,7 @@ pub enum CheckpointError {
 }
 
 /// 清理策略
+/// TODO:
 #[derive(Debug, Clone)]
 pub enum CleanupPolicy {
     /// 保留最近 N 个检查点

@@ -34,7 +34,6 @@ impl CheckpointMetadata {
             thread_id,
             created_at: chrono::Utc::now().timestamp(),
             step,
-            // source_node: "".to_string(),
             tags: HashMap::new(),
             checkpoint_type: CheckpointType::Final,
         }

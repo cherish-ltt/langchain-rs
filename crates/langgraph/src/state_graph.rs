@@ -194,14 +194,9 @@ where
                 if let Some(thread_id) = &config.thread_id
                     && let Some(checkpointer) = &self.checkpointer
                 {
-                    let parent_id = if let Ok(e) = checkpointer.get(thread_id).await {
-                        match e {
-                            Some(e) => e.metadata.parent_id,
-                            None => None,
-                        }
-                    } else {
-                        None
-                    };
+                    let parent_id = checkpointer
+                        .get_metadata_parent_id_by_thread_id(thread_id)
+                        .await;
                     let checkpoint =
                         Checkpoint::new_final(state.clone(), thread_id.clone(), step, parent_id);
                     if let Err(e) = checkpointer.put(&checkpoint).await {
@@ -244,14 +239,9 @@ where
                     .iter()
                     .map(|n| n.as_str().to_owned())
                     .collect();
-                let parent_id = if let Ok(e) = checkpointer.get(thread_id).await {
-                    match e {
-                        Some(e) => e.metadata.parent_id,
-                        None => None,
-                    }
-                } else {
-                    None
-                };
+                let parent_id = checkpointer
+                    .get_metadata_parent_id_by_thread_id(thread_id)
+                    .await;
                 let checkpoint = Checkpoint::new_auto_with_next_nodes(
                     state.clone(),
                     thread_id.clone(),
@@ -336,14 +326,9 @@ where
                 if current_nodes.is_empty() {
                     // End of graph, save final state
                     if let Some(thread_id) = &config.thread_id && let Some(checkpointer) = checkpointer {
-                        let parent_id = if let Ok(e) = checkpointer.get(thread_id).await {
-                            match e {
-                                Some(e) => e.metadata.parent_id,
-                                None => None,
-                            }
-                        } else {
-                            None
-                        };
+                        let parent_id = checkpointer
+                            .get_metadata_parent_id_by_thread_id(thread_id)
+                            .await;
                         let checkpoint =
                             Checkpoint::new_final(state.clone(), thread_id.clone(), step, parent_id);
                         if let Err(e) = checkpointer.put(&checkpoint).await {
@@ -359,14 +344,9 @@ where
                     tracing::info!("Interrupting before nodes: {:?}", current_nodes);
                     if let Some(thread_id) = &config.thread_id && let Some(checkpointer) = checkpointer {
                         let next_node_strs = current_nodes.iter().map(|n| n.as_str().to_owned()).collect();
-                        let parent_id = if let Ok(e) = checkpointer.get(thread_id).await {
-                            match e {
-                                Some(e) => e.metadata.parent_id,
-                                None => None,
-                            }
-                        } else {
-                            None
-                        };
+                        let parent_id = checkpointer
+                            .get_metadata_parent_id_by_thread_id(thread_id)
+                            .await;
                         let checkpoint = Checkpoint::new_auto_with_next_nodes(
                             state.clone(),
                             thread_id.clone(),
@@ -437,14 +417,9 @@ where
                 // Save Checkpoint
                 if let Some(thread_id) = &config.thread_id && let Some(checkpointer) = checkpointer {
                         let next_node_strs = all_next_nodes.iter().map(|n| n.as_str().to_owned()).collect();
-                        let parent_id = if let Ok(e) = checkpointer.get(thread_id).await {
-                            match e {
-                                Some(e) => e.metadata.parent_id,
-                                None => None,
-                            }
-                        } else {
-                            None
-                        };
+                        let parent_id = checkpointer
+                            .get_metadata_parent_id_by_thread_id(thread_id)
+                            .await;
                         let checkpoint = Checkpoint::new_auto_with_next_nodes(
                             state.clone(),
                             thread_id.clone(),
@@ -463,14 +438,9 @@ where
                     tracing::info!("Interrupting after nodes: {:?}", current_nodes);
                     if let Some(thread_id) = &config.thread_id && let Some(checkpointer) = checkpointer {
                         let next_node_strs = all_next_nodes.iter().map(|n| n.as_str().to_owned()).collect();
-                        let parent_id = if let Ok(e) = checkpointer.get(thread_id).await {
-                            match e {
-                                Some(e) => e.metadata.parent_id,
-                                None => None,
-                            }
-                        } else {
-                            None
-                        };
+                        let parent_id = checkpointer
+                            .get_metadata_parent_id_by_thread_id(thread_id)
+                            .await;
                         let checkpoint = Checkpoint::new_auto_with_next_nodes(
                             state.clone(),
                             thread_id.clone(),

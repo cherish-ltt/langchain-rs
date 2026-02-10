@@ -14,7 +14,7 @@ use crate::checkpoint::{CheckpointId, CheckpointListResult, CheckpointOrder, Che
 
 pub type MemorySaverStorage = Arc<RwLock<HashMap<String, HashMap<CheckpointId, Vec<u8>>>>>;
 
-/// 内存检查点保存器
+/// 内存检查点保存器，主要用于开发和测试，不建议在生产环境中使用
 #[derive(Debug, Clone)]
 pub struct MemorySaver {
     /// 存储：thread_id -> (checkpoint_id -> checkpoint)
@@ -412,7 +412,6 @@ mod tests {
                 thread_id: "thread-1".to_owned(),
                 created_at: Utc::now().timestamp(),
                 step: 1,
-                // source_node: "Llm".to_string(),
                 tags: HashMap::new(),
                 checkpoint_type: CheckpointType::Auto,
             },
@@ -446,7 +445,6 @@ mod tests {
                 thread_id: "thread-1".to_owned(),
                 created_at: Utc::now().timestamp(),
                 step: 1,
-                // source_node: "Llm".to_string(),
                 tags: HashMap::new(),
                 checkpoint_type: CheckpointType::Auto,
             },
@@ -464,7 +462,6 @@ mod tests {
                 thread_id: "thread-1".to_owned(),
                 created_at: Utc::now().timestamp(),
                 step: 1,
-                // source_node: "Llm".to_string(),
                 tags: HashMap::new(),
                 checkpoint_type: CheckpointType::Auto,
             },
