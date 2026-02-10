@@ -47,6 +47,6 @@ async fn main() {
         .unwrap();
 
     if let Some(msg) = state.messages.last() {
-        println!("最终回复: {:?}", msg.as_ref());
+        println!("{}", msg.to_pretty());
     }
 }

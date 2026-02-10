@@ -185,6 +185,54 @@ impl Message {
             Message::Tool { content, .. } => content,
         }
     }
+
+    pub fn to_pretty(&self) -> String {
+        match self {
+            Message::User { content, .. } => match content {
+                Content::Text(s) => format!(
+                    "================================ Human Message =================================\n\n{s}\n\n"
+                ),
+                _ => "".to_owned(),
+            },
+            Message::Assistant {
+                content,
+                tool_calls,
+                ..
+            } => {
+                if let Some(tool_calls) = tool_calls
+                    && !tool_calls.is_empty()
+                {
+                    format!(
+                        "================================ Ai Message =================================\nCall Tools:\n{:?}\n\n",
+                        tool_calls
+                    )
+                } else {
+                    format!(
+                        "================================ Ai Message =================================\n\n{content}\n\n"
+                    )
+                }
+            }
+            Message::System { content, .. } => {
+                format!(
+                    "================================ System Message =================================\n\n{content}\n\n"
+                )
+            }
+            Message::Developer { content, .. } => {
+                format!(
+                    "================================ Developer Message =================================\n\n{content}\n\n"
+                )
+            }
+            Message::Tool {
+                content,
+                tool_call_id,
+            } => {
+                format!(
+                    "================================ Tool Message =================================\n\nTool {}: {}\n\n",
+                    tool_call_id, content
+                )
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
