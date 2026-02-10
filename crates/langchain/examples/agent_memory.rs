@@ -28,7 +28,7 @@ async fn main() {
         .build();
 
     let result = agent
-        .invoke(Message::user("我给你取名叫老大！"), Some("0001".to_owned()))
+        .invoke(Message::user("我给你取名叫老大！"), Some("0001"))
         .await
         .unwrap();
 
@@ -38,7 +38,7 @@ async fn main() {
     );
 
     let result = agent
-        .invoke(Message::user("你叫什么名字？"), Some("0001".to_owned()))
+        .invoke(Message::user("你叫什么名字？"), Some("0001"))
         .await
         .unwrap();
 
