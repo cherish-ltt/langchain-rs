@@ -54,7 +54,7 @@ pub struct SqliteSaver {
 impl SqliteSaver {
     /// 创建新的 SQLite 检查点保存器
     pub async fn new(config: SqliteSaverConfig) -> Result<Self, CheckpointError> {
-        // 解析连接选项
+        // 解析连接选项 此处create_if_missing只能自动创建 x.db，如果 path 存在未创建的文件夹，比如:data/x.db，会因为 data 文件夹不存在而 panic
         let options = SqliteConnectOptions::from_str(&config.database_path)
             .map_err(|e| CheckpointError::Storage(format!("Invalid database path: {}", e)))?
             .create_if_missing(true);
@@ -290,13 +290,7 @@ where
             .map_err(|e| CheckpointError::Storage(format!("Query failed: {}", e)))?;
 
         match row {
-            Some(r) => {
-                let checkpoint = Self::row_to_checkpoint::<S>(&r);
-                if let Err(e) = &checkpoint {
-                    println!("e::{}", e);
-                }
-                Ok(Some(checkpoint.unwrap()))
-            }
+            Some(r) => Ok(Some(Self::row_to_checkpoint::<S>(&r)?)),
             None => Ok(None),
         }
     }
@@ -711,40 +705,35 @@ where
         // 批量删除
         let mut count = 0;
         if !to_delete.is_empty() {
-            let placeholders = to_delete.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let query = format!(
-                "DELETE FROM
-          checkpoints WHERE id IN ({})",
-                placeholders
-            );
+            for id_chunk in to_delete.chunks(900) {
+                // 使用远低于变量限制的分块大小
+                let placeholders = id_chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let query = format!("DELETE FROM checkpoints WHERE id IN ({})", placeholders);
 
-            let mut q = sqlx::query(&query);
-            for id in &to_delete {
-                q = q.bind(id);
+                let mut q = sqlx::query(&query);
+                for id in id_chunk {
+                    q = q.bind(id);
+                }
+                let result = q
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| CheckpointError::Storage(format!("Delete failed: {}", e)))?;
+                count += result.rows_affected() as usize;
             }
-            q.execute(&self.pool).await.map_err(|e| {
-                CheckpointError::Storage(format!(
-                    "Delete
-              failed: {}",
-                    e
-                ))
-            })?;
-            count = to_delete.len();
         }
 
         Ok(count)
     }
 
     async fn stats(&self, thread_id: Option<&str>) -> Result<CheckpointStats, CheckpointError> {
-        let (count_query, _size_query, time_query) = if let Some(tid) = thread_id {
+        let (count_query, time_query) = if thread_id.is_some() {
             (
                 "SELECT COUNT(*) as count, SUM(size_bytes) as size FROM checkpoints WHERE thread_id = ?".to_owned(),
-                format!("SELECT COUNT(*) as count, SUM(size_bytes) as size FROM checkpoints WHERE thread_id = '{}'", tid),
-                format!("SELECT MIN(created_at) as oldest, MAX(created_at) as newest FROM checkpoints WHERE thread_id = '{}'", tid)
+                "SELECT MIN(created_at) as oldest, MAX(created_at) as newest FROM checkpoints WHERE thread_id = ?"
+                    .to_owned(),
             )
         } else {
             (
-                "SELECT COUNT(*) as count, SUM(size_bytes) as size FROM checkpoints".to_owned(),
                 "SELECT COUNT(*) as count, SUM(size_bytes) as size FROM checkpoints".to_owned(),
                 "SELECT MIN(created_at) as oldest, MAX(created_at) as newest FROM checkpoints"
                     .to_owned(),
@@ -764,7 +753,11 @@ where
         let total_size: i64 = stats_row.try_get("size").unwrap_or(0);
 
         // 获取时间范围
-        let time_row = sqlx::query(&time_query)
+        let mut time_q = sqlx::query(&time_query);
+        if let Some(tid) = thread_id {
+            time_q = time_q.bind(tid);
+        }
+        let time_row = time_q
             .fetch_one(&self.pool)
             .await
             .map_err(|e| CheckpointError::Storage(format!("Time query failed: {}", e)))?;
