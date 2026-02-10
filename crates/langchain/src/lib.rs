@@ -452,7 +452,7 @@ impl ReactAgent {
     pub async fn invoke(
         &self,
         message: Message,
-        thread_id: Option<String>,
+        thread_id: Option<&str>,
     ) -> Result<MessagesState, AgentError> {
         let config = thread_id.map_or(
             RunnableConfig {
@@ -460,7 +460,7 @@ impl ReactAgent {
                 response_format: None,
             },
             |thread_id| RunnableConfig {
-                thread_id: Some(thread_id),
+                thread_id: Some(thread_id.to_owned()),
                 response_format: None,
             },
         );
@@ -480,7 +480,7 @@ impl ReactAgent {
     pub async fn invoke_structured<S>(
         &self,
         message: Message,
-        thread_id: Option<String>,
+        thread_id: Option<&str>,
     ) -> Result<AgentState<MessagesState, S>, AgentError>
     where
         S: serde::de::DeserializeOwned + JsonSchema,
@@ -510,7 +510,7 @@ impl ReactAgent {
                 response_format: response_format.clone(),
             },
             |thread_id| RunnableConfig {
-                thread_id: Some(thread_id),
+                thread_id: Some(thread_id.to_owned()),
                 response_format,
             },
         );
@@ -542,7 +542,7 @@ impl ReactAgent {
     pub async fn stream<'a>(
         &'a self,
         message: Message,
-        thread_id: Option<String>,
+        thread_id: Option<&str>,
     ) -> Result<impl Stream<Item = ChatStreamEvent> + 'a, AgentError> {
         let graph = &self.graph;
 
@@ -552,7 +552,7 @@ impl ReactAgent {
                 response_format: None,
             },
             |thread_id| RunnableConfig {
-                thread_id: Some(thread_id),
+                thread_id: Some(thread_id.to_owned()),
                 response_format: None,
             },
         );
@@ -742,9 +742,9 @@ mod tests {
             .build();
 
         // 第一次调用，使用 thread_id "thread-1"
-        let thread_id = "thread-1".to_owned();
+        let thread_id = "thread-1";
         let state1 = agent
-            .invoke(Message::user("hello"), Some(thread_id.clone()))
+            .invoke(Message::user("hello"), Some(thread_id))
             .await
             .unwrap();
 
@@ -753,7 +753,7 @@ mod tests {
 
         // 第二次调用，使用相同的 thread_id
         let state2 = agent
-            .invoke(Message::user("world"), Some(thread_id.clone()))
+            .invoke(Message::user("world"), Some(thread_id))
             .await
             .unwrap();
 
@@ -777,18 +777,18 @@ mod tests {
             // .with_tools(vec![tool])
             .build(); // 默认无 checkpointer
 
-        let thread_id = "thread-2".to_owned();
+        let thread_id = "thread-2";
 
         // 第一次调用
         let state1 = agent
-            .invoke(Message::user("hello"), Some(thread_id.clone()))
+            .invoke(Message::user("hello"), Some(thread_id))
             .await
             .unwrap();
         assert_eq!(state1.messages.len(), 2);
 
         // 第二次调用，即使传入 thread_id，由于没有 checkpointer，状态也不会累积
         let state2 = agent
-            .invoke(Message::user("world"), Some(thread_id.clone()))
+            .invoke(Message::user("world"), Some(thread_id))
             .await
             .unwrap();
         assert_eq!(state2.messages.len(), 2);
