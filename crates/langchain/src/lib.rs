@@ -2,6 +2,7 @@ use std::{collections::HashMap, error::Error, marker::PhantomData, mem, sync::Ar
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt, future::join_all};
+use langchain_core::ToolError;
 use langchain_core::{
     message::{FunctionCall, Message, ToolCall},
     request::{FormatType, ResponseFormat, ToolSpec},
@@ -21,6 +22,7 @@ use langgraph::{
 };
 use schemars::JsonSchema;
 use thiserror::Error;
+use tracing::debug;
 
 pub struct LlmNode<M>
 where
@@ -292,9 +294,6 @@ enum ReactAgentLabel {
     Llm,
     Tool,
 }
-
-pub use langchain_core::ToolError;
-use tracing::debug;
 
 #[derive(Debug, Error)]
 pub enum AgentError {
