@@ -816,7 +816,7 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_saver_config_default() {
         let config = SqliteSaverConfig::default();
-        assert_eq!(config.database_path, "sqlite://data/checkoutpoint.db");
+        assert_eq!(config.database_path, "data/checkoutpoint.db");
         assert_eq!(config.pool_size, 3);
         assert!(config.auto_create_table);
     }
