@@ -2,11 +2,8 @@ use crate::{
     checkpoint::{CheckpointId, CheckpointType},
     interrupt::Interrupt,
 };
-use async_trait::async_trait;
-use langchain_core::request::ResponseFormat;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{collections::HashMap, default, sync::Arc};
-use tokio::sync::Mutex;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// 检查点元数据
@@ -77,7 +74,7 @@ impl<S> Checkpoint<S> {
     /// 创建 `CheckpointType::Final` 元数据
     pub fn new_final(state: S, thread_id: String, step: usize, parent_id: Option<String>) -> Self {
         Checkpoint {
-            state: state,
+            state,
             next_nodes: Vec::new(),
             pending_interrupt: None,
             metadata: CheckpointMetadata::new_final(thread_id.clone(), step, parent_id),
@@ -94,7 +91,7 @@ impl<S> Checkpoint<S> {
         parent_id: Option<String>,
     ) -> Self {
         Checkpoint {
-            state: state,
+            state,
             next_nodes,
             pending_interrupt: None,
             metadata: CheckpointMetadata::new_auto(thread_id.clone(), step, parent_id),
@@ -104,7 +101,7 @@ impl<S> Checkpoint<S> {
     /// 创建 `CheckpointType::Auto` 元数据
     pub fn new_auto(state: S, thread_id: String, step: usize, parent_id: Option<String>) -> Self {
         Checkpoint {
-            state: state,
+            state,
             next_nodes: Vec::new(),
             pending_interrupt: None,
             metadata: CheckpointMetadata::new_auto(thread_id.clone(), step, parent_id),

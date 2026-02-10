@@ -12,11 +12,13 @@ use crate::checkpoint::checkpoint_trait::{
 };
 use crate::checkpoint::{CheckpointId, CheckpointListResult, CheckpointOrder, CheckpointQuery};
 
+pub type MemorySaverStorage = Arc<RwLock<HashMap<String, HashMap<CheckpointId, Vec<u8>>>>>;
+
 /// 内存检查点保存器
 #[derive(Debug, Clone)]
 pub struct MemorySaver {
     /// 存储：thread_id -> (checkpoint_id -> checkpoint)
-    storage: Arc<RwLock<HashMap<String, HashMap<CheckpointId, Vec<u8>>>>>,
+    storage: MemorySaverStorage,
     /// 元数据索引：thread_id -> vec of metadata
     metadata_index: Arc<RwLock<HashMap<String, Vec<CheckpointMetadata>>>>,
 }
@@ -47,12 +49,12 @@ where
 
         if let Some(checkpoints) = storage.get(thread_id) {
             // 获取最新的检查点
-            if let Some(metadata) = index.get(thread_id).and_then(|v| v.last()) {
-                if let Some(data) = checkpoints.get(&metadata.id) {
-                    let checkpoint: Checkpoint<S> = serde_json::from_slice(data)
-                        .map_err(|e| CheckpointError::Serialization(e.to_string()))?;
-                    return Ok(Some(checkpoint));
-                }
+            if let Some(metadata) = index.get(thread_id).and_then(|v| v.last())
+                && let Some(data) = checkpoints.get(&metadata.id)
+            {
+                let checkpoint: Checkpoint<S> = serde_json::from_slice(data)
+                    .map_err(|e| CheckpointError::Serialization(e.to_string()))?;
+                return Ok(Some(checkpoint));
             }
         }
         Ok(None)
@@ -136,32 +138,32 @@ where
 
         for (thread_id, metadatas) in index.iter() {
             // 过滤 thread_id
-            if let Some(ref query_thread_id) = query.thread_id {
-                if thread_id != query_thread_id {
-                    continue;
-                }
+            if let Some(ref query_thread_id) = query.thread_id
+                && thread_id != query_thread_id
+            {
+                continue;
             }
 
             for metadata in metadatas {
                 let mut match_condition = true;
 
                 // 过滤时间范围
-                if let Some(start) = query.start_time {
-                    if metadata.created_at < start {
-                        match_condition = false;
-                    }
+                if let Some(start) = query.start_time
+                    && metadata.created_at < start
+                {
+                    match_condition = false;
                 }
-                if let Some(end) = query.end_time {
-                    if metadata.created_at > end {
-                        match_condition = false;
-                    }
+                if let Some(end) = query.end_time
+                    && metadata.created_at > end
+                {
+                    match_condition = false;
                 }
 
                 // 过滤类型
-                if let Some(ref cp_type) = query.checkpoint_type {
-                    if &metadata.checkpoint_type != cp_type {
-                        match_condition = false;
-                    }
+                if let Some(ref cp_type) = query.checkpoint_type
+                    && &metadata.checkpoint_type != cp_type
+                {
+                    match_condition = false;
                 }
 
                 // 过滤标签
@@ -286,7 +288,7 @@ where
 
         if let Some(metadatas) = index.get(thread_id) {
             // 找到最接近指定时间的检查点
-            let metadata = metadatas.iter().filter(|m| m.created_at <= time).last();
+            let metadata = metadatas.iter().rfind(|m| m.created_at <= time);
 
             if let Some(metadata) = metadata {
                 return self.get_by_id(&metadata.id).await;
@@ -338,7 +340,7 @@ where
         // 释放锁后再删除
         drop(index);
 
-        let mut count = 0;
+        let count = 0;
         // for checkpoint_id in to_delete {
         //     self.delete_checkpoint(&checkpoint_id).await?;
         //     count += 1;
@@ -394,7 +396,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::Serialize;
 
     #[tokio::test]
     async fn checkpoint_memory_saver_basic_flow() {
@@ -408,7 +409,7 @@ mod tests {
             metadata: CheckpointMetadata {
                 id: Uuid::now_v7().to_string(),
                 parent_id: None,
-                thread_id: "thread-1".to_string(),
+                thread_id: "thread-1".to_owned(),
                 created_at: Utc::now().timestamp(),
                 step: 1,
                 // source_node: "Llm".to_string(),
@@ -416,7 +417,7 @@ mod tests {
                 checkpoint_type: CheckpointType::Auto,
             },
             state: 42,
-            next_nodes: vec!["Tool".to_string()],
+            next_nodes: vec!["Tool".to_owned()],
             pending_interrupt: None,
         };
 
@@ -442,7 +443,7 @@ mod tests {
             metadata: CheckpointMetadata {
                 id: checkpoint_parent_id.clone(),
                 parent_id: None,
-                thread_id: "thread-1".to_string(),
+                thread_id: "thread-1".to_owned(),
                 created_at: Utc::now().timestamp(),
                 step: 1,
                 // source_node: "Llm".to_string(),
@@ -450,7 +451,7 @@ mod tests {
                 checkpoint_type: CheckpointType::Auto,
             },
             state: 42,
-            next_nodes: vec!["Tool".to_string()],
+            next_nodes: vec!["Tool".to_owned()],
             pending_interrupt: None,
         };
 
@@ -460,7 +461,7 @@ mod tests {
             metadata: CheckpointMetadata {
                 id: checkpoint_child_id.clone(),
                 parent_id: Some(checkpoint_parent_id.clone()),
-                thread_id: "thread-1".to_string(),
+                thread_id: "thread-1".to_owned(),
                 created_at: Utc::now().timestamp(),
                 step: 1,
                 // source_node: "Llm".to_string(),
@@ -468,7 +469,7 @@ mod tests {
                 checkpoint_type: CheckpointType::Auto,
             },
             state: 43,
-            next_nodes: vec!["Tool".to_string()],
+            next_nodes: vec!["Tool".to_owned()],
             pending_interrupt: None,
         };
 

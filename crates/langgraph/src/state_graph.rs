@@ -1,7 +1,7 @@
 use crate::{
     checkpoint::{
-        CheckpointType, RunnableConfig,
-        checkpoint_struct_api::{Checkpoint, CheckpointMetadata, Checkpointer},
+        RunnableConfig,
+        checkpoint_struct_api::{Checkpoint, Checkpointer},
     },
     event::GraphEvent,
     graph::{Graph, GraphError},
@@ -163,25 +163,25 @@ where
             && let Some(thread_id) = &config.thread_id
         {
             tracing::info!("Resuming from checkpoint: {:?}", config);
-            if let Ok(checkpoint) = checkpointer.get(thread_id).await {
-                if let Some(checkpoint) = checkpoint {
-                    // 如果 checkpoint 中有下一步节点，则从那里继续
+            if let Ok(checkpoint) = checkpointer.get(thread_id).await
+                && let Some(checkpoint) = checkpoint
+            {
+                // 如果 checkpoint 中有下一步节点，则从那里继续
 
-                    if !checkpoint.next_nodes.is_empty() {
-                        // 使用标签注册表进行快速查找（O(1) 而不是 O(n)）
-                        use crate::label_registry::str_to_label;
+                if !checkpoint.next_nodes.is_empty() {
+                    // 使用标签注册表进行快速查找（O(1) 而不是 O(n)）
+                    use crate::label_registry::str_to_label;
 
-                        let restored_nodes: Vec<_> = checkpoint
-                            .next_nodes
-                            .into_iter()
-                            .filter_map(|node_str| str_to_label(&node_str))
-                            .collect();
+                    let restored_nodes: Vec<_> = checkpoint
+                        .next_nodes
+                        .into_iter()
+                        .filter_map(|node_str| str_to_label(&node_str))
+                        .collect();
 
-                        if !restored_nodes.is_empty() {
-                            current_nodes = restored_nodes;
-                        } else {
-                            tracing::warn!("No nodes could be restored from checkpoint");
-                        }
+                    if !restored_nodes.is_empty() {
+                        current_nodes = restored_nodes;
+                    } else {
+                        tracing::warn!("No nodes could be restored from checkpoint");
                     }
                 }
             }
