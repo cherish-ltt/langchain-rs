@@ -12,6 +12,7 @@ use crate::{
 use futures::future::join_all;
 use langchain_core::store::BaseStore;
 use serde::{Serialize, de::DeserializeOwned};
+use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -155,15 +156,15 @@ where
         config: &RunnableConfig,
         max_steps: usize,
         strategy: RunStrategy,
-        resume_from: Option<Vec<String>>,
+        resume_from: Option<SmallVec<[String; 4]>>,
     ) -> Result<(S, Vec<InternedGraphLabel>), GraphError<E>> {
-        let mut current_nodes = vec![self.entry];
+        let mut current_nodes: SmallVec<[InternedGraphLabel; 4]> = smallvec![self.entry];
 
         // 优先使用显式传入的恢复点
         if let Some(nodes) = resume_from {
             if !nodes.is_empty() {
                 use crate::label_registry::str_to_label;
-                let restored_nodes: Vec<_> = nodes
+                let restored_nodes: SmallVec<[_; _]> = nodes
                     .iter()
                     .filter_map(|node_str| str_to_label(node_str))
                     .collect();
@@ -185,7 +186,7 @@ where
                     // 使用标签注册表进行快速查找（O(1) 而不是 O(n)）
                     use crate::label_registry::str_to_label;
 
-                    let restored_nodes: Vec<_> = checkpoint
+                    let restored_nodes: SmallVec<[_; 4]> = checkpoint
                         .next_nodes
                         .into_iter()
                         .filter_map(|node_str| str_to_label(&node_str))
@@ -216,7 +217,7 @@ where
                         tracing::error!("Failed to save checkpoint: {:?}", e);
                     }
                 }
-                return Ok((state, current_nodes));
+                return Ok((state, current_nodes.into_vec()));
             }
 
             // 1. 并行执行当前步骤的所有活跃节点
@@ -231,7 +232,7 @@ where
             // 2. 收集结果并应用 Reducer
             // 注意：虽然执行是并行的，但 Reducer 的应用是顺序的（按节点顺序）
             // 这保证了确定性。如果用户需要特定的合并逻辑，应该在 reducer 内部处理。
-            let mut all_next_nodes = Vec::new();
+            let mut all_next_nodes: SmallVec<[InternedGraphLabel; 4]> = SmallVec::new();
 
             for result in results {
                 let (update, next) = result?;
@@ -274,15 +275,15 @@ where
             match strategy {
                 RunStrategy::StopAtNonLinear => {
                     if all_next_nodes.len() > 1 {
-                        return Ok((state, current_nodes));
+                        return Ok((state, current_nodes.into_vec()));
                     }
                     current_nodes = all_next_nodes;
                 }
                 RunStrategy::PickFirst => {
-                    current_nodes = vec![all_next_nodes[0]];
+                    current_nodes = smallvec![all_next_nodes[0]];
                 }
                 RunStrategy::PickLast => {
-                    current_nodes = vec![all_next_nodes[all_next_nodes.len() - 1]];
+                    current_nodes = smallvec![all_next_nodes[all_next_nodes.len() - 1]];
                 }
                 RunStrategy::Parallel => {
                     // 在 Parallel 模式下，保留所有分支作为下一轮的活跃节点
@@ -291,7 +292,7 @@ where
             }
         }
 
-        Ok((state, current_nodes))
+        Ok((state, current_nodes.into_vec()))
     }
 
     pub fn stream<'a>(
@@ -300,11 +301,11 @@ where
         config: &'a RunnableConfig,
         max_steps: usize,
         strategy: RunStrategy,
-        resume_from: Option<Vec<String>>,
+        resume_from: Option<SmallVec<[String; 4]>>,
     ) -> EventStream<'a, Ev> {
         use futures::StreamExt;
 
-        let mut current_nodes = vec![self.entry];
+        let mut current_nodes: SmallVec<[InternedGraphLabel; 4]> = smallvec![self.entry];
         let graph = &self.graph;
         let reducer = &self.reducer;
         let checkpointer = &self.checkpointer;
@@ -315,7 +316,7 @@ where
             if let Some(nodes) = resume_from {
                  if !nodes.is_empty() {
                      use crate::label_registry::str_to_label;
-                     let restored_nodes: Vec<_> = nodes
+                     let restored_nodes: SmallVec<[_; 4]> = nodes
                         .iter()
                         .filter_map(|node_str| str_to_label(node_str))
                         .collect();
@@ -334,7 +335,7 @@ where
                             // 使用标签注册表进行快速查找（O(1) 而不是 O(n)）
                             use crate::label_registry::str_to_label;
 
-                            let restored_nodes: Vec<_> = checkpoint
+                            let restored_nodes: SmallVec<[_; 4]> = checkpoint
                                 .next_nodes
                                 .into_iter()
                                 .filter_map(|node_str| str_to_label(node_str.as_str()))
@@ -405,7 +406,7 @@ where
                 // 合并所有流
                 let mut combined_stream = futures::stream::select_all(streams);
 
-                let mut all_next_nodes = Vec::new();
+                let mut all_next_nodes: SmallVec<[InternedGraphLabel; 4]> = SmallVec::new();
                 let mut updates = Vec::new();
 
                 while let Some(event_result) = combined_stream.next().await {
@@ -492,10 +493,10 @@ where
                         current_nodes = all_next_nodes;
                     }
                     RunStrategy::PickFirst => {
-                        current_nodes = vec![all_next_nodes[0]];
+                        current_nodes = smallvec![all_next_nodes[0]];
                     }
                     RunStrategy::PickLast => {
-                        current_nodes = vec![all_next_nodes[all_next_nodes.len() - 1]];
+                        current_nodes = smallvec![all_next_nodes[all_next_nodes.len() - 1]];
                     }
                     RunStrategy::Parallel => {
                         current_nodes = all_next_nodes;

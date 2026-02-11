@@ -396,6 +396,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smallvec::smallvec;
 
     #[tokio::test]
     async fn checkpoint_memory_saver_basic_flow() {
@@ -416,7 +417,7 @@ mod tests {
                 checkpoint_type: CheckpointType::Auto,
             },
             state: 42,
-            next_nodes: vec!["Tool".to_owned()],
+            next_nodes: smallvec!["Tool".to_owned()],
             pending_interrupt: None,
         };
 
@@ -449,7 +450,7 @@ mod tests {
                 checkpoint_type: CheckpointType::Auto,
             },
             state: 42,
-            next_nodes: vec!["Tool".to_owned()],
+            next_nodes: smallvec!["Tool".to_owned()],
             pending_interrupt: None,
         };
 
@@ -466,7 +467,7 @@ mod tests {
                 checkpoint_type: CheckpointType::Auto,
             },
             state: 43,
-            next_nodes: vec!["Tool".to_owned()],
+            next_nodes: smallvec!["Tool".to_owned()],
             pending_interrupt: None,
         };
 

@@ -24,6 +24,7 @@ use langgraph::{
 };
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+use smallvec::SmallVec;
 use thiserror::Error;
 use tracing::debug;
 
@@ -593,7 +594,10 @@ impl ReactAgent {
         Ok(stream)
     }
 
-    async fn get_state(&self, config: &RunnableConfig) -> (MessagesState, Option<Vec<String>>) {
+    async fn get_state(
+        &self,
+        config: &RunnableConfig,
+    ) -> (MessagesState, Option<SmallVec<[String; 4]>>) {
         if let Some(checkpointer) = &self.graph.checkpointer
             && let Some(thread_id) = &config.thread_id
         {
