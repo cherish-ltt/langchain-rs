@@ -684,7 +684,7 @@ where
     }
 
     async fn stats(&self, thread_id: Option<&str>) -> Result<CheckpointStats, CheckpointError> {
-        let (count_query, time_query) = if let Some(_tid) = thread_id {
+        let (count_query, time_query) = if thread_id.is_some() {
             (
                 "SELECT COUNT(*) as count, SUM(size_bytes) as size FROM langchain_rs_checkpoints WHERE thread_id = $1",
                 "SELECT MIN(created_at) as oldest, MAX(created_at) as newest FROM langchain_rs_checkpoints WHERE thread_id = $1",
