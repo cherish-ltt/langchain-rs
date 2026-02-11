@@ -2,7 +2,7 @@ use std::{collections::HashMap, error::Error, marker::PhantomData, mem, sync::Ar
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt, future::join_all};
-use langchain_core::ToolError;
+use langchain_core::{ModelError, ToolError};
 use langchain_core::{
     message::{FunctionCall, Message, ToolCall},
     request::{FormatType, ResponseFormat, ToolSpec},
@@ -302,7 +302,7 @@ enum ReactAgentLabel {
 #[derive(Debug, Error)]
 pub enum AgentError {
     #[error("model error: {0}")]
-    Model(#[source] Box<dyn Error + Send + Sync>),
+    Model(#[from] ModelError),
     #[error("tool error: {0}")]
     Tool(#[source] Box<dyn Error + Send + Sync>),
     #[error("graph execution error: {0}")]
@@ -670,7 +670,7 @@ mod tests {
             &self,
             _messages: &[std::sync::Arc<Message>],
             options: &langchain_core::state::InvokeOptions<'_>,
-        ) -> Result<ChatCompletion, Box<dyn std::error::Error + Send + Sync>> {
+        ) -> Result<ChatCompletion, langchain_core::error::ModelError> {
             let tool_calls = if options.tools.is_some() {
                 let call = ToolCall {
                     id: "call1".to_owned(),
@@ -702,10 +702,8 @@ mod tests {
             &self,
             _messages: &[std::sync::Arc<Message>],
             _options: &langchain_core::state::InvokeOptions<'_>,
-        ) -> Result<
-            langchain_core::state::StandardChatStream,
-            Box<dyn std::error::Error + Send + Sync>,
-        > {
+        ) -> Result<langchain_core::state::StandardChatStream, langchain_core::error::ModelError>
+        {
             use async_stream::try_stream;
 
             let stream = try_stream! {

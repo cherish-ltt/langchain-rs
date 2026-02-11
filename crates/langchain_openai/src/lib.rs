@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use langchain_core::{
+    error::ModelError,
     message::Message,
     request::RequestBody,
     response::ResponseBody,
@@ -36,7 +37,7 @@ impl ChatModel for ChatOpenAI {
         &self,
         messages: &[Arc<Message>],
         options: &InvokeOptions<'_>,
-    ) -> Result<ChatCompletion, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ChatCompletion, ModelError> {
         let tools = options.tools.unwrap_or(&[]).to_vec();
 
         let mut request = RequestBody::from_model(&self.model).with_messages(messages.to_vec());
@@ -105,17 +106,12 @@ impl ChatModel for ChatOpenAI {
                 .await
                 .unwrap_or_else(|e| format!("failed to read error body: {e}"));
             tracing::error!("OpenAI API error: status = {status}, body = {body}");
-            return Err(match status.as_u16() {
-                401 => {
-                    Box::new(OpenAIError::InvalidApiKey) as Box<dyn std::error::Error + Send + Sync>
-                }
-                404 => {
-                    Box::new(OpenAIError::ModelNotFound) as Box<dyn std::error::Error + Send + Sync>
-                }
-                _ => Box::new(OpenAIError::Other(format!(
-                    "status: {status}, body: {body}"
-                ))) as Box<dyn std::error::Error + Send + Sync>,
-            });
+            let error = match status.as_u16() {
+                401 => OpenAIError::InvalidApiKey,
+                404 => OpenAIError::ModelNotFound,
+                _ => OpenAIError::Other(format!("status: {status}, body: {body}")),
+            };
+            return Err(error.into());
         }
 
         let response: ResponseBody = response
@@ -145,7 +141,7 @@ impl ChatModel for ChatOpenAI {
         &self,
         messages: &[Arc<Message>],
         options: &InvokeOptions<'_>,
-    ) -> Result<StandardChatStream, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<StandardChatStream, ModelError> {
         let tools = options.tools.unwrap_or(&[]).to_vec();
 
         let mut request = RequestBody::from_model(&self.model).with_messages(messages.to_vec());
@@ -208,17 +204,12 @@ impl ChatModel for ChatOpenAI {
                 .await
                 .unwrap_or_else(|e| format!("failed to read error body: {e}"));
             tracing::error!("OpenAI API error: status = {status}, body = {body}");
-            return Err(match status.as_u16() {
-                401 => {
-                    Box::new(OpenAIError::InvalidApiKey) as Box<dyn std::error::Error + Send + Sync>
-                }
-                404 => {
-                    Box::new(OpenAIError::ModelNotFound) as Box<dyn std::error::Error + Send + Sync>
-                }
-                _ => Box::new(OpenAIError::Other(format!(
-                    "status: {status}, body: {body}"
-                ))) as Box<dyn std::error::Error + Send + Sync>,
-            });
+            let error = match status.as_u16() {
+                401 => OpenAIError::InvalidApiKey,
+                404 => OpenAIError::ModelNotFound,
+                _ => OpenAIError::Other(format!("status: {status}, body: {body}")),
+            };
+            return Err(error.into());
         }
 
         let stream = async_stream::try_stream! {

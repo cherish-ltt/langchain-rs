@@ -1,3 +1,4 @@
+use langchain_core::error::ModelError;
 use thiserror::Error;
 
 /// OpenAI API 错误
@@ -24,4 +25,20 @@ pub enum OpenAIError {
     /// 其他错误
     #[error("其他错误: {0}")]
     Other(String),
+}
+
+impl From<OpenAIError> for ModelError {
+    fn from(e: OpenAIError) -> Self {
+        match e {
+            OpenAIError::InvalidApiKey => ModelError::InvalidApiKey,
+            OpenAIError::ModelNotFound => ModelError::ModelNotFound("OpenAI model".to_owned()),
+            OpenAIError::Timeout => ModelError::Timeout(0),
+            OpenAIError::Http(e) => ModelError::RequestFailed(e),
+            OpenAIError::ResponseBodyParse(e) => ModelError::RequestFailed(e),
+            OpenAIError::InvalidHeaderValue(s) => {
+                ModelError::Other(Box::new(OpenAIError::InvalidHeaderValue(s)))
+            }
+            OpenAIError::Other(s) => ModelError::ResponseError(s),
+        }
+    }
 }

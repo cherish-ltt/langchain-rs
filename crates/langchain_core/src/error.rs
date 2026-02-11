@@ -64,6 +64,9 @@ pub enum ModelError {
 
     #[error("Response error: {0}")]
     ResponseError(String),
+
+    #[error("Other error: {0}")]
+    Other(#[source] Box<dyn Error + Send + Sync>),
 }
 
 impl LangChainError for ModelError {
@@ -76,6 +79,7 @@ impl LangChainError for ModelError {
             ModelError::Timeout(_) => ErrorCategory::Transient,
             ModelError::ParseError(_) => ErrorCategory::Internal,
             ModelError::ResponseError(_) => ErrorCategory::External,
+            ModelError::Other(_) => ErrorCategory::Internal,
         }
     }
 

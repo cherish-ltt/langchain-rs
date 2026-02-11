@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::{
+    error::ModelError,
     message::{Message, ToolCall},
     request::{ResponseFormat, ToolSpec},
     response::Usage,
@@ -138,11 +139,8 @@ pub enum ChatStreamEvent {
 pub type ChatStream<E> = Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, E>> + Send>>;
 
 /// 标准的 ChatStream，使用 Box<dyn Error>
-pub type StandardChatStream = Pin<
-    Box<
-        dyn Stream<Item = Result<ChatStreamEvent, Box<dyn std::error::Error + Send + Sync>>> + Send,
-    >,
->;
+pub type StandardChatStream =
+    Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, ModelError>> + Send>>;
 
 #[async_trait]
 pub trait ChatModel: Send + Sync {
@@ -150,11 +148,11 @@ pub trait ChatModel: Send + Sync {
         &self,
         messages: &[Arc<Message>],
         options: &InvokeOptions<'_>,
-    ) -> Result<ChatCompletion, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<ChatCompletion, ModelError>;
 
     async fn stream(
         &self,
         messages: &[Arc<Message>],
         options: &InvokeOptions<'_>,
-    ) -> Result<StandardChatStream, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<StandardChatStream, ModelError>;
 }
