@@ -63,11 +63,8 @@ impl MessagesState {
         self.messages.push_back(message);
     }
 
-    pub fn extend_messages<I>(&mut self, messages: I)
-    where
-        I: IntoIterator<Item = Arc<Message>>,
-    {
-        self.messages.extend(messages);
+    pub fn extend_messages(&mut self, messages: Vector<Arc<Message>>) {
+        self.messages.append(messages);
     }
 
     /// 便捷方法：自动包装为 Arc

@@ -21,17 +21,20 @@ use std::sync::Arc;
 /// (Current State, Update) -> New State
 pub type Reducer<S, U> = Box<dyn Fn(S, U) -> S + Send + Sync>;
 
-/// StateGraph 带 Ev 泛型
-/// Ev = (): 不支持流式事件
-/// Ev = ChatStreamEvent: 支持 ChatStreamEvent 事件
-///
-/// S: State (全局状态)
-/// U: Update (节点返回的增量更新)
-pub struct StateGraph<S, U, E, Ev: Debug = ()> {
-    pub graph: Graph<S, U, E, Ev>,
-    pub reducer: Reducer<S, U>,
+/// Graph Specification trait to bundle generic types
+pub trait GraphSpec {
+    type State: Send + Sync + Clone + 'static;
+    type Update: Send + Sync + 'static;
+    type Error: Send + Sync + Debug + 'static;
+    type Event: Send + Sync + Debug + 'static;
+}
+
+/// StateGraph uses GraphSpec to define types
+pub struct StateGraph<Spec: GraphSpec> {
+    pub graph: Graph<Spec::State, Spec::Update, Spec::Error, Spec::Event>,
+    pub reducer: Reducer<Spec::State, Spec::Update>,
     pub entry: InternedGraphLabel,
-    pub checkpointer: Option<Arc<dyn Checkpointer<S>>>,
+    pub checkpointer: Option<Arc<dyn Checkpointer<Spec::State>>>,
     pub store: Option<Arc<dyn BaseStore>>,
     pub interrupt_before: Vec<InternedGraphLabel>,
     pub interrupt_after: Vec<InternedGraphLabel>,
@@ -50,12 +53,12 @@ pub enum RunStrategy {
     Parallel,
 }
 
-impl<S, U, E: Debug, Ev: Debug> StateGraph<S, U, E, Ev> {
+impl<Spec: GraphSpec> StateGraph<Spec> {
     /// 从入口节点创建 StateGraph
     /// 需要提供一个 reducer 函数来定义如何合并状态
     pub fn new(
         entry: impl GraphLabel,
-        reducer: impl Fn(S, U) -> S + Send + Sync + 'static,
+        reducer: impl Fn(Spec::State, Spec::Update) -> Spec::State + Send + Sync + 'static,
     ) -> Self {
         Self {
             graph: Graph {
@@ -76,13 +79,19 @@ impl<S, U, E: Debug, Ev: Debug> StateGraph<S, U, E, Ev> {
     }
 
     /// 设置检查点保存器
-    pub fn with_checkpointer(mut self, checkpointer: impl Checkpointer<S> + 'static) -> Self {
+    pub fn with_checkpointer(
+        mut self,
+        checkpointer: impl Checkpointer<Spec::State> + 'static,
+    ) -> Self {
         self.checkpointer = Some(Arc::new(checkpointer));
         self
     }
 
     /// 设置共享的检查点保存器
-    pub fn with_shared_checkpointer(mut self, checkpointer: Arc<dyn Checkpointer<S>>) -> Self {
+    pub fn with_shared_checkpointer(
+        mut self,
+        checkpointer: Arc<dyn Checkpointer<Spec::State>>,
+    ) -> Self {
         self.checkpointer = Some(checkpointer);
         self
     }
@@ -115,7 +124,7 @@ impl<S, U, E: Debug, Ev: Debug> StateGraph<S, U, E, Ev> {
     /// 节点的输入是 S (State)，输出是 U (Update)
     pub fn add_node<T>(&mut self, label: impl GraphLabel, node: T)
     where
-        T: Node<S, U, E, Ev>,
+        T: Node<Spec::State, Spec::Update, Spec::Error, Spec::Event>,
     {
         let interned = label.intern();
         register_label(interned); // 全局注册以加速 checkpoint 恢复
@@ -135,29 +144,26 @@ impl<S, U, E: Debug, Ev: Debug> StateGraph<S, U, E, Ev> {
         branches: HashMap<InternedGraphLabel, InternedGraphLabel>,
         condition: F,
     ) where
-        F: Fn(&U) -> Vec<InternedGraphLabel> + Send + Sync + 'static,
+        F: Fn(&Spec::Update) -> Vec<InternedGraphLabel> + Send + Sync + 'static,
     {
         self.graph
             .add_node_condition_edge(pred, branches, condition);
     }
 }
 
-impl<S, U, E, Ev: Debug> StateGraph<S, U, E, Ev>
+impl<Spec: GraphSpec> StateGraph<Spec>
 where
-    S: Send + Sync + Clone + 'static + Serialize + DeserializeOwned,
-    U: Send + Sync + 'static,
-    E: Send + Sync + std::fmt::Debug + 'static,
-    Ev: Send + Sync + 'static,
+    Spec::State: Serialize + DeserializeOwned,
 {
     /// 同步执行
     pub async fn run(
         &self,
-        mut state: S,
+        mut state: Spec::State,
         config: &RunnableConfig,
         max_steps: usize,
         strategy: RunStrategy,
         resume_from: Option<SmallVec<[String; 4]>>,
-    ) -> Result<(S, Vec<InternedGraphLabel>), GraphError<E>> {
+    ) -> Result<(Spec::State, Vec<InternedGraphLabel>), GraphError<Spec::Error>> {
         let mut current_nodes: SmallVec<[InternedGraphLabel; 4]> = smallvec![self.entry];
 
         // 优先使用显式传入的恢复点
@@ -293,12 +299,12 @@ where
 
     pub fn stream<'a>(
         &'a self,
-        mut state: S,
+        mut state: Spec::State,
         config: &'a RunnableConfig,
         max_steps: usize,
         strategy: RunStrategy,
         resume_from: Option<SmallVec<[String; 4]>>,
-    ) -> EventStream<'a, Ev> {
+    ) -> EventStream<'a, Spec::Event> {
         use futures::StreamExt;
 
         let mut current_nodes: SmallVec<[InternedGraphLabel; 4]> = smallvec![self.entry];
@@ -506,15 +512,15 @@ where
 }
 
 /// StateGraph 运行器（用于逐步执行）
-pub struct StateGraphRunner<'g, S, U, E, Ev: Debug> {
-    pub state_graph: &'g StateGraph<S, U, E, Ev>,
+pub struct StateGraphRunner<'g, Spec: GraphSpec> {
+    pub state_graph: &'g StateGraph<Spec>,
     pub current_nodes: Vec<InternedGraphLabel>,
-    pub state: S,
+    pub state: Spec::State,
 }
 
-impl<'g, S, U, E: Debug, Ev: Debug> StateGraphRunner<'g, S, U, E, Ev> {
+impl<'g, Spec: GraphSpec> StateGraphRunner<'g, Spec> {
     /// 创建新的运行器
-    pub fn new(state_graph: &'g StateGraph<S, U, E, Ev>, initial_state: S) -> Self {
+    pub fn new(state_graph: &'g StateGraph<Spec>, initial_state: Spec::State) -> Self {
         Self {
             state_graph,
             current_nodes: vec![state_graph.entry],
@@ -530,6 +536,14 @@ mod tests {
     use super::*;
     use crate::label::GraphLabel;
     use crate::node::{EventSink, Node, NodeContext, NodeError};
+
+    struct TestSpec;
+    impl GraphSpec for TestSpec {
+        type State = i32;
+        type Update = i32;
+        type Error = NodeError;
+        type Event = ();
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash, GraphLabel)]
     enum TestLabel {
@@ -566,8 +580,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_linear_chain() {
-        let mut sg: StateGraph<i32, i32, NodeError, ()> =
-            StateGraph::new(TestLabel::A, |_, update| update);
+        let mut sg: StateGraph<TestSpec> = StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -586,8 +599,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_conditional_branch_taken() {
-        let mut sg: StateGraph<i32, i32, NodeError, ()> =
-            StateGraph::new(TestLabel::A, |_, update| update);
+        let mut sg: StateGraph<TestSpec> = StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -614,8 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_runs_conditional_branch_not_taken_stops_at_predicate() {
-        let mut sg: StateGraph<i32, i32, NodeError, ()> =
-            StateGraph::new(TestLabel::A, |_, update| update);
+        let mut sg: StateGraph<TestSpec> = StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
 
@@ -640,8 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_run_strategy_stop_at_non_linear() {
-        let mut sg: StateGraph<i32, i32, NodeError, ()> =
-            StateGraph::new(TestLabel::A, |_, update| update);
+        let mut sg: StateGraph<TestSpec> = StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -665,8 +675,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_run_strategy_pick_first() {
-        let mut sg: StateGraph<i32, i32, NodeError, ()> =
-            StateGraph::new(TestLabel::A, |_, update| update);
+        let mut sg: StateGraph<TestSpec> = StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -690,8 +699,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_run_strategy_pick_last() {
-        let mut sg: StateGraph<i32, i32, NodeError, ()> =
-            StateGraph::new(TestLabel::A, |_, update| update);
+        let mut sg: StateGraph<TestSpec> = StateGraph::new(TestLabel::A, |_, update| update);
 
         sg.add_node(TestLabel::A, AddOne);
         sg.add_node(TestLabel::B, AddOne);
@@ -733,10 +741,17 @@ mod tests {
             }
         }
 
-        let mut sg: StateGraph<i32, String, String, ()> =
-            StateGraph::new(TestLabel::A, |_, update: String| {
-                update.parse::<i32>().unwrap()
-            });
+        struct StringSpec;
+        impl GraphSpec for StringSpec {
+            type State = i32;
+            type Update = String;
+            type Error = String;
+            type Event = ();
+        }
+
+        let mut sg: StateGraph<StringSpec> = StateGraph::new(TestLabel::A, |_, update: String| {
+            update.parse::<i32>().unwrap()
+        });
         sg.add_node(TestLabel::A, StringNode);
         let config = RunnableConfig::default();
         let (final_state, _) = sg
@@ -748,7 +763,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_graph_run_strategy_parallel() {
-        let mut sg: StateGraph<i32, i32, NodeError, ()> =
+        let mut sg: StateGraph<TestSpec> =
             StateGraph::new(TestLabel::A, |state, update| state + update);
 
         sg.add_node(TestLabel::A, AddOne);
@@ -793,7 +808,15 @@ mod tests {
             E,
         }
 
-        let mut sg: StateGraph<Vec<String>, String, NodeError, ()> =
+        struct VecSpec;
+        impl GraphSpec for VecSpec {
+            type State = Vec<String>;
+            type Update = String;
+            type Error = NodeError;
+            type Event = ();
+        }
+
+        let mut sg: StateGraph<VecSpec> =
             StateGraph::new(Label::A, |mut state: Vec<String>, update: String| {
                 state.push(update);
                 state.sort(); // Sort to make deterministic comparison easy

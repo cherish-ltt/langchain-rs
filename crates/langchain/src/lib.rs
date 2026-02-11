@@ -15,7 +15,7 @@ use langgraph::{
     },
     graph::GraphError,
     label::{BaseGraphLabel, GraphLabel},
-    state_graph::{RunStrategy, StateGraph},
+    state_graph::{GraphSpec, RunStrategy, StateGraph},
 };
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -27,6 +27,16 @@ pub mod node;
 use node::identity::IdentityNode;
 pub use node::llm::LlmNode;
 pub use node::tool::ToolNode;
+
+/// Specification for the React Agent Graph
+pub struct ReactAgentSpec;
+
+impl GraphSpec for ReactAgentSpec {
+    type State = MessagesState;
+    type Update = MessagesState;
+    type Error = AgentError;
+    type Event = ChatStreamEvent;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GraphLabel)]
 enum ReactAgentLabel {
@@ -109,15 +119,14 @@ where
     pub fn build(self) -> ReactAgent {
         let (tool_specs, tools) = parse_tool(self.tools);
 
-        let mut graph: StateGraph<MessagesState, MessagesState, AgentError, ChatStreamEvent> =
-            StateGraph::new(
-                BaseGraphLabel::Start,
-                |mut old: MessagesState, update: MessagesState| {
-                    old.extend_messages(update.messages);
-                    old.llm_calls += update.llm_calls;
-                    old
-                },
-            );
+        let mut graph: StateGraph<ReactAgentSpec> = StateGraph::new(
+            BaseGraphLabel::Start,
+            |mut old: MessagesState, update: MessagesState| {
+                old.extend_messages(update.messages);
+                old.llm_calls += update.llm_calls;
+                old
+            },
+        );
 
         if let Some(store) = self.store {
             graph = graph.with_shared_store(store);
@@ -168,7 +177,7 @@ where
 }
 
 pub struct ReactAgent {
-    pub graph: StateGraph<MessagesState, MessagesState, AgentError, ChatStreamEvent>,
+    pub graph: StateGraph<ReactAgentSpec>,
     pub system_prompt: Option<String>,
 }
 
