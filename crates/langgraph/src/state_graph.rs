@@ -158,7 +158,8 @@ where
     ) -> Result<(S, Vec<InternedGraphLabel>), GraphError<E>> {
         let mut current_nodes = vec![self.entry];
 
-        // 尝试从 Checkpoint 恢复
+        // 尝试从 Checkpoint 恢复，
+        // TODO: 这里应该是否不需要每次都从 checkpoint 恢复，只有在中断时才需要从 checkpoint 恢复
         if let Some(checkpointer) = &self.checkpointer
             && let Some(thread_id) = &config.thread_id
         {
