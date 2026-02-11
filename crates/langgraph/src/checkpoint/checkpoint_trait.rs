@@ -53,7 +53,18 @@ pub trait Checkpointer<S>: Send + Sync {
         checkpoint_id: &CheckpointId,
     ) -> Result<Option<String>, CheckpointError>;
 
-    // 获取指定检查点的元数据
+    // 获取指定检查点的元数据的 id
+    async fn get_metadata_id_by_thread_id(&self, thread_id: &str) -> Option<String> {
+        if let Ok(checkpoint) = self.get(thread_id).await
+            && let Some(checkpoint) = checkpoint
+        {
+            Some(checkpoint.metadata.id)
+        } else {
+            None
+        }
+    }
+
+    // 获取指定检查点的元数据的 parent_id
     async fn get_metadata_parent_id_by_thread_id(&self, thread_id: &str) -> Option<String> {
         if let Ok(checkpoint) = self.get(thread_id).await
             && let Some(checkpoint) = checkpoint
