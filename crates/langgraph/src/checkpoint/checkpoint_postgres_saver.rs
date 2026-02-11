@@ -663,7 +663,7 @@ where
                         SELECT id, size_bytes,
                             SUM(size_bytes) OVER (ORDER BY created_at ASC) as cumulative_size
                         FROM langchain_rs_checkpoints
-                        ORDER BY created_at ASC
+                        ORDER BY id DESC
                     )
                     DELETE FROM langchain_rs_checkpoints
                     WHERE id IN (
