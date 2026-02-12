@@ -5,10 +5,11 @@ edition = "2024"
 
 [features]
 default = ["memory"]
-full-checkpoint = ["memory", "sqlite", "postgres"]
+full-checkpoint = ["memory", "sqlite", "postgres", "redis"]
 memory = []
 sqlite = []
 postgres = []
+redis = []
 
 [dependencies]
 thiserror = { workspace = true }
@@ -34,6 +35,13 @@ sqlx = { version = "0.8", features = [
     "postgres",
     "chrono",
     "uuid",
+    "json",
+] }
+# Redis
+redis = { version = "1", features = [
+    "connection-manager",
+    "aio",
+    "tokio-comp",
     "json",
 ] }
 

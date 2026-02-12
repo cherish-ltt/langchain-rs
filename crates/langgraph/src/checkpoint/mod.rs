@@ -1,6 +1,7 @@
 mod checkpoint_instantiation;
 mod checkpoint_memory_saver;
 mod checkpoint_postgres_saver;
+mod checkpoint_redis_saver;
 mod checkpoint_sqlite_saver;
 mod checkpoint_trait;
 
@@ -24,6 +25,19 @@ pub struct RunnableConfig {
     pub thread_id: Option<String>,
     /// 响应格式
     pub response_format: Option<ResponseFormat>,
+}
+
+pub mod checkpoint_struct_api {
+    pub use super::checkpoint_instantiation::*;
+    #[cfg(feature = "memory")]
+    pub use super::checkpoint_memory_saver::*;
+    #[cfg(feature = "postgres")]
+    pub use super::checkpoint_postgres_saver::*;
+    #[cfg(feature = "redis")]
+    pub use super::checkpoint_redis_saver::*;
+    #[cfg(feature = "sqlite")]
+    pub use super::checkpoint_sqlite_saver::*;
+    pub use super::checkpoint_trait::*;
 }
 
 /// 检查点 ID（唯一标识-uuidv7）
