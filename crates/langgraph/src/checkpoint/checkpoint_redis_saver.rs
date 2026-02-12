@@ -408,6 +408,77 @@ impl RedisSaver {
 
         Ok(())
     }
+
+    /// 使用 pipeline 批量删除检查点及其索引
+    async fn batch_delete_checkpoints(
+        &self,
+        checkpoints: Vec<CheckpointMetadata>,
+    ) -> Result<usize, CheckpointError> {
+        if checkpoints.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self.conn.clone();
+        let deleted_count = checkpoints.len();
+
+        // 使用 pipeline 批量执行所有删除操作
+        let mut pipeline = redis::pipe();
+
+        for metadata in &checkpoints {
+            let checkpoint_key = self.checkpoint_key(&metadata.id);
+            let thread_id = &metadata.thread_id;
+
+            // 删除检查点数据
+            pipeline.cmd("DEL").arg(&checkpoint_key);
+
+            // 从索引中移除
+            if self.enable_indexes {
+                let timeline_key = self.timeline_key(thread_id);
+                let steps_key = self.steps_key(thread_id);
+                let thread_index_key = self.thread_index_key(thread_id);
+                let parent_index_key = self.parent_index_key(&metadata.id);
+
+                pipeline.cmd("ZREM").arg(&timeline_key).arg(&metadata.id);
+                pipeline.cmd("ZREM").arg(&steps_key).arg(&metadata.id);
+                pipeline.cmd("SREM").arg(&thread_index_key).arg(&metadata.id);
+                pipeline.cmd("DEL").arg(&parent_index_key);
+            }
+        }
+
+        // 执行 pipeline
+        let _: () = pipeline
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| CheckpointError::Storage(format!("Pipeline failed: {}", e)))?;
+
+        // 检查并清理空线程（需要单独处理，因为需要检查 S_CARD）
+        if self.enable_indexes {
+            // 收集所有涉及的线程 ID
+            let thread_ids: std::collections::HashSet<&String> =
+                checkpoints.iter().map(|m| &m.thread_id).collect();
+
+            for thread_id in thread_ids {
+                let thread_index_key = self.thread_index_key(thread_id);
+                let remaining: i64 = conn
+                    .scard(&thread_index_key)
+                    .await
+                    .map_err(|e| {
+                        CheckpointError::Storage(format!("Failed to check thread size: {}", e))
+                    })?;
+                if remaining == 0 {
+                    let all_threads_key = self.all_threads_key();
+                    let _: () = conn.srem(all_threads_key, thread_id).await.map_err(|e| {
+                        CheckpointError::Storage(format!(
+                            "Failed to remove from all threads set: {}",
+                            e
+                        ))
+                    })?;
+                }
+            }
+        }
+
+        Ok(deleted_count)
+    }
 }
 
 #[async_trait]
@@ -796,14 +867,14 @@ where
                         CheckpointError::Storage(format!("Failed to get threads: {}", e))
                     })?;
 
-                let mut total_deleted = 0;
-
-                for thread_id in thread_ids {
-                    let timeline_key = self.timeline_key(&thread_id);
+                // 收集所有需要删除的检查点 ID
+                let mut all_old_ids: Vec<String> = Vec::new();
+                for thread_id in &thread_ids {
+                    let timeline_key = self.timeline_key(thread_id);
 
                     // 获取时间早于 cutoff 的检查点
                     let old_ids: Vec<String> = conn
-                        .zrangebyscore_limit(&timeline_key, i64::MIN, cutoff, 0, -1)
+                        .zrangebyscore(&timeline_key, i64::MIN, cutoff)
                         .await
                         .map_err(|e| {
                             CheckpointError::Storage(format!(
@@ -812,26 +883,68 @@ where
                             ))
                         })?;
 
-                    for checkpoint_id in old_ids {
-                        let checkpoint_key = self.checkpoint_key(&checkpoint_id);
-                        if let Some(metadata) = self.get_metadata_from_hash(&checkpoint_key).await?
-                        {
-                            // 删除检查点数据
-                            let _: () = conn.del(&checkpoint_key).await.map_err(|e| {
-                                CheckpointError::Storage(format!(
-                                    "Failed to delete checkpoint: {}",
-                                    e
-                                ))
-                            })?;
+                    all_old_ids.extend(old_ids);
+                }
 
-                            // 从索引中移除
-                            self.remove_from_indexes(&metadata).await?;
-                            total_deleted += 1;
-                        }
+                if all_old_ids.is_empty() {
+                    return Ok(0);
+                }
+
+                // 使用 pipeline 批量获取所有元数据
+                let mut pipeline = redis::pipe();
+                for checkpoint_id in &all_old_ids {
+                    let checkpoint_key = self.checkpoint_key(checkpoint_id);
+                    pipeline.cmd("HGETALL").arg(&checkpoint_key);
+                }
+
+                let results: Vec<HashMap<String, String>> = pipeline
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(|e| CheckpointError::Storage(format!("Pipeline failed: {}", e)))?;
+
+                // 解析元数据
+                let mut metadata_list: Vec<CheckpointMetadata> = Vec::new();
+                for data in results {
+                    if data.is_empty() {
+                        continue;
+                    }
+
+                    let checkpoint_type_str = match data.get("checkpoint_type") {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let checkpoint_type = match Self::parse_checkpoint_type(checkpoint_type_str) {
+                        Ok(t) => t,
+                        Err(_) => continue,
+                    };
+
+                    let tags_json = data.get("tags").cloned().unwrap_or_else(|| "{}".to_owned());
+                    let tags: HashMap<String, String> =
+                        match serde_json::from_str(&tags_json) {
+                            Ok(t) => t,
+                            Err(_) => continue,
+                        };
+
+                    if let (Some(id), Some(thread_id), Some(created_at), Some(step)) = (
+                        data.get("id"),
+                        data.get("thread_id"),
+                        data.get("created_at").and_then(|s| s.parse::<i64>().ok()),
+                        data.get("step").and_then(|s| s.parse::<usize>().ok()),
+                    ) {
+                        metadata_list.push(CheckpointMetadata {
+                            id: id.clone(),
+                            parent_id: data.get("parent_id").cloned().filter(|s| !s.is_empty()),
+                            thread_id: thread_id.clone(),
+                            created_at,
+                            step,
+                            tags,
+                            checkpoint_type,
+                        });
                     }
                 }
 
-                Ok(total_deleted)
+                // 批量删除
+                self.batch_delete_checkpoints(metadata_list).await
             }
             CleanupPolicy::KeepMaxSizeBytes(max_size) => {
                 let mut conn = self.conn.clone();
