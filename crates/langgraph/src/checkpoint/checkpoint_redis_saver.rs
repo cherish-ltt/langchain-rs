@@ -5,10 +5,10 @@ use redis::aio::ConnectionManager;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 
-use crate::checkpoint::checkpoint_struct_api::{Checkpoint, CheckpointMetadata};
 use crate::checkpoint::checkpoint_trait::{
     CheckpointError, CheckpointStats, Checkpointer, CleanupPolicy,
 };
+use crate::checkpoint::{Checkpoint, CheckpointMetadata};
 use crate::checkpoint::{
     CheckpointId, CheckpointListResult, CheckpointOrder, CheckpointQuery, CheckpointType,
 };
@@ -28,7 +28,7 @@ impl Default for RedisSaverConfig {
     fn default() -> Self {
         Self {
             redis_url: "redis://localhost:6379/0".to_owned(),
-            key_prefix: "langchain_rs_checkpoint".to_owned(),
+            key_prefix: "agent_checkpoint".to_owned(),
             enable_indexes: true,
         }
     }
@@ -36,10 +36,10 @@ impl Default for RedisSaverConfig {
 
 impl RedisSaverConfig {
     /// 创建配置
-    pub fn new(redis_url: String) -> Self {
+    pub fn from_url(redis_url: String) -> Self {
         Self {
             redis_url,
-            key_prefix: "langchain_rs_checkpoint".to_owned(),
+            key_prefix: "agent_checkpoint".to_owned(),
             enable_indexes: true,
         }
     }

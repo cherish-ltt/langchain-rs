@@ -1,7 +1,7 @@
 use langchain::ReactAgent;
 use langchain_core::message::Message;
 use langchain_openai::ChatOpenAIBuilder;
-use langgraph::checkpoint::checkpoint_struct_api::{RedisSaver, RedisSaverConfig};
+use langgraph::checkpoint::{RedisSaver, RedisSaverConfig};
 use std::{env, sync::Arc};
 use tracing_subscriber::EnvFilter;
 
@@ -19,13 +19,12 @@ async fn main() {
 
     let api_key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     // 注意，运行此示例会在 database_url 的数据中创建名为 langchain_rs_checkpoint 的键，如果冲突则会失败
-    let database_url = env::var("LANGCHAIN_RS_REDIS_DATABASE_URL")
-        .expect("LANGCHAIN_RS_REDIS_DATABASE_URL must be set");
+    let database_url = env::var("REDIS_URL").expect("REDIS_URL must be set");
 
     let model = ChatOpenAIBuilder::from_base(MODEL, BASE_URL, api_key.as_str()).build();
 
     let checkpointer = Arc::new(
-        RedisSaver::new(RedisSaverConfig::new(database_url))
+        RedisSaver::new(RedisSaverConfig::from_url(database_url))
             .await
             .unwrap(),
     );
