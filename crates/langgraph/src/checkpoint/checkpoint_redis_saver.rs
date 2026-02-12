@@ -918,13 +918,24 @@ where
     }
 
     async fn stats(&self, thread_id: Option<&str>) -> Result<CheckpointStats, CheckpointError> {
+        let mut conn = self.conn.clone();
+
+        // 确定要统计的线程 ID 列表
+        let thread_ids: Vec<String> = if let Some(tid) = thread_id {
+            vec![tid.to_owned()]
+        } else {
+            // 获取所有线程 ID
+            conn.smembers(self.all_threads_key()).await.map_err(|e| {
+                CheckpointError::Storage(format!("Failed to get all threads: {}", e))
+            })?
+        };
+
         let mut total_count = 0;
         let mut total_size = 0;
         let mut oldest = None;
         let mut newest = None;
 
-        if let Some(tid) = thread_id {
-            let mut conn = self.conn.clone();
+        for tid in &thread_ids {
             let thread_index_key = self.thread_index_key(tid);
 
             // 获取该线程的所有检查点 ID
@@ -935,7 +946,6 @@ where
 
             for checkpoint_id in checkpoint_ids {
                 let checkpoint_key = self.checkpoint_key(&checkpoint_id);
-                let mut conn = self.conn.clone();
 
                 // 获取大小
                 if let Ok(Some(size_str)) = conn
