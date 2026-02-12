@@ -87,6 +87,11 @@ impl RedisSaver {
         format!("{}:index:{}:parent", self.key_prefix, id)
     }
 
+    /// 全局线程集合键
+    fn all_threads_key(&self) -> String {
+        format!("{}:all_threads", self.key_prefix)
+    }
+
     fn checkpoint_type_to_string(cp_type: &CheckpointType) -> &'static str {
         match cp_type {
             CheckpointType::Auto => "Auto",
@@ -329,6 +334,12 @@ impl RedisSaver {
                 CheckpointError::Storage(format!("Failed to add to thread index: {}", e))
             })?;
 
+        // 添加到全局线程集合
+        let all_threads_key = self.all_threads_key();
+        let _: () = conn.sadd(all_threads_key, thread_id).await.map_err(|e| {
+            CheckpointError::Storage(format!("Failed to add to all threads set: {}", e))
+        })?;
+
         // 添加到父子关系索引
         if let Some(ref parent_id) = checkpoint.metadata.parent_id {
             let parent_index_key = self.parent_index_key(checkpoint_id);
@@ -371,11 +382,23 @@ impl RedisSaver {
         // 从线程索引移除
         let thread_index_key = self.thread_index_key(thread_id);
         let _: () = conn
-            .srem(thread_index_key, checkpoint_id)
+            .srem(&thread_index_key, checkpoint_id)
             .await
             .map_err(|e| {
                 CheckpointError::Storage(format!("Failed to remove from thread index: {}", e))
             })?;
+
+        // 检查线程是否还有检查点，如果没有则从全局线程集合中移除
+        let remaining: i64 = conn
+            .scard(&thread_index_key)
+            .await
+            .map_err(|e| CheckpointError::Storage(format!("Failed to check thread size: {}", e)))?;
+        if remaining == 0 {
+            let all_threads_key = self.all_threads_key();
+            let _: () = conn.srem(all_threads_key, thread_id).await.map_err(|e| {
+                CheckpointError::Storage(format!("Failed to remove from all threads set: {}", e))
+            })?;
+        }
 
         // 移除父子关系索引
         let parent_index_key = self.parent_index_key(checkpoint_id);
@@ -717,21 +740,181 @@ where
     async fn cleanup(&self, policy: &CleanupPolicy) -> Result<usize, CheckpointError> {
         match policy {
             CleanupPolicy::KeepLast(n) => {
-                // 获取所有线程 ID（需要维护一个全局的线程集合）
-                // 简化实现：返回 0
-                Ok(0)
+                let mut conn = self.conn.clone();
+                let all_threads_key = self.all_threads_key();
+
+                // 获取所有线程 ID
+                let thread_ids: Vec<String> =
+                    conn.smembers(&all_threads_key).await.map_err(|e| {
+                        CheckpointError::Storage(format!("Failed to get threads: {}", e))
+                    })?;
+
+                let mut total_deleted = 0;
+
+                for thread_id in thread_ids {
+                    let timeline_key = self.timeline_key(&thread_id);
+
+                    // 获取该线程所有检查点（按时间倒序）
+                    let all_ids: Vec<String> =
+                        conn.zrevrange(&timeline_key, 0, -1).await.map_err(|e| {
+                            CheckpointError::Storage(format!("Failed to get checkpoints: {}", e))
+                        })?;
+
+                    // 跳过前 n 个，删除其余的
+                    if all_ids.len() > *n {
+                        let ids_to_delete = &all_ids[*n..];
+                        for checkpoint_id in ids_to_delete {
+                            // 获取元数据以便清理索引
+                            let checkpoint_key = self.checkpoint_key(checkpoint_id);
+                            if let Some(metadata) =
+                                self.get_metadata_from_hash(&checkpoint_key).await?
+                            {
+                                // 删除检查点数据
+                                let _: () = conn.del(&checkpoint_key).await.map_err(|e| {
+                                    CheckpointError::Storage(format!(
+                                        "Failed to delete checkpoint: {}",
+                                        e
+                                    ))
+                                })?;
+
+                                // 从索引中移除
+                                self.remove_from_indexes(&metadata).await?;
+                                total_deleted += 1;
+                            }
+                        }
+                    }
+                }
+
+                Ok(total_deleted)
             }
             CleanupPolicy::KeepDays(days) => {
-                let cutoff = Utc::now().timestamp() - (days * 86400);
+                let cutoff = Utc::now().timestamp_millis() - (days * 86400 * 1000);
+                let mut conn = self.conn.clone();
+                let all_threads_key = self.all_threads_key();
 
-                // 遍历所有线程，删除旧检查点
-                // 简化实现：返回 0
-                Ok(0)
+                // 获取所有线程 ID
+                let thread_ids: Vec<String> =
+                    conn.smembers(&all_threads_key).await.map_err(|e| {
+                        CheckpointError::Storage(format!("Failed to get threads: {}", e))
+                    })?;
+
+                let mut total_deleted = 0;
+
+                for thread_id in thread_ids {
+                    let timeline_key = self.timeline_key(&thread_id);
+
+                    // 获取时间早于 cutoff 的检查点
+                    let old_ids: Vec<String> = conn
+                        .zrangebyscore_limit(&timeline_key, i64::MIN, cutoff, 0, -1)
+                        .await
+                        .map_err(|e| {
+                            CheckpointError::Storage(format!(
+                                "Failed to get old checkpoints: {}",
+                                e
+                            ))
+                        })?;
+
+                    for checkpoint_id in old_ids {
+                        let checkpoint_key = self.checkpoint_key(&checkpoint_id);
+                        if let Some(metadata) = self.get_metadata_from_hash(&checkpoint_key).await?
+                        {
+                            // 删除检查点数据
+                            let _: () = conn.del(&checkpoint_key).await.map_err(|e| {
+                                CheckpointError::Storage(format!(
+                                    "Failed to delete checkpoint: {}",
+                                    e
+                                ))
+                            })?;
+
+                            // 从索引中移除
+                            self.remove_from_indexes(&metadata).await?;
+                            total_deleted += 1;
+                        }
+                    }
+                }
+
+                Ok(total_deleted)
             }
-            CleanupPolicy::KeepMaxSizeBytes(_) => {
-                // Redis 没有直接获取总大小的方法
-                // 需要遍历所有检查点计算
-                Ok(0)
+            CleanupPolicy::KeepMaxSizeBytes(max_size) => {
+                let mut conn = self.conn.clone();
+                let all_threads_key = self.all_threads_key();
+
+                // 获取所有线程 ID
+                let thread_ids: Vec<String> =
+                    conn.smembers(&all_threads_key).await.map_err(|e| {
+                        CheckpointError::Storage(format!("Failed to get threads: {}", e))
+                    })?;
+
+                // 收集所有检查点及其大小和时间
+                let mut all_checkpoints: Vec<(String, usize, i64, String)> = Vec::new(); // (id, size, created_at, thread_id)
+
+                for thread_id in &thread_ids {
+                    let thread_index_key = self.thread_index_key(thread_id);
+                    let checkpoint_ids: Vec<String> =
+                        conn.smembers(&thread_index_key).await.map_err(|e| {
+                            CheckpointError::Storage(format!("Failed to get checkpoints: {}", e))
+                        })?;
+
+                    for checkpoint_id in checkpoint_ids {
+                        let checkpoint_key = self.checkpoint_key(&checkpoint_id);
+
+                        // 获取大小和创建时间
+                        let size_str: Option<String> = conn
+                            .hget(&checkpoint_key, "size_bytes")
+                            .await
+                            .map_err(|e| {
+                                CheckpointError::Storage(format!("Failed to get size: {}", e))
+                            })?;
+                        let created_str: Option<String> = conn
+                            .hget(&checkpoint_key, "created_at")
+                            .await
+                            .map_err(|e| {
+                                CheckpointError::Storage(format!("Failed to get created_at: {}", e))
+                            })?;
+
+                        if let (Some(size_str), Some(created_str)) = (size_str, created_str)
+                            && let (Ok(size), Ok(created)) =
+                                (size_str.parse::<usize>(), created_str.parse::<i64>())
+                        {
+                            all_checkpoints.push((checkpoint_id, size, created, thread_id.clone()));
+                        }
+                    }
+                }
+
+                // 计算总大小
+                let total_size: usize = all_checkpoints.iter().map(|(_, s, _, _)| s).sum();
+
+                if total_size <= *max_size {
+                    return Ok(0);
+                }
+
+                // 按创建时间升序排序（最旧的在前）
+                all_checkpoints.sort_by_key(|(_, _, created, _)| *created);
+
+                // 删除最旧的检查点直到满足大小限制
+                let mut current_size = total_size;
+                let mut deleted = 0;
+
+                for (checkpoint_id, size, _, _thread_id) in all_checkpoints {
+                    if current_size <= *max_size {
+                        break;
+                    }
+
+                    let checkpoint_key = self.checkpoint_key(&checkpoint_id);
+                    if let Some(metadata) = self.get_metadata_from_hash(&checkpoint_key).await? {
+                        // 删除检查点数据
+                        let _: () = conn.del(&checkpoint_key).await.map_err(|e| {
+                            CheckpointError::Storage(format!("Failed to delete checkpoint: {}", e))
+                        })?;
+
+                        // 从索引中移除
+                        self.remove_from_indexes(&metadata).await?;
+                        current_size -= size;
+                        deleted += 1;
+                    }
+                }
+
+                Ok(deleted)
             }
         }
     }

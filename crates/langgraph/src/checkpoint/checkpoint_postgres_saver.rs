@@ -632,7 +632,7 @@ where
                 Ok(result.rows_affected() as usize)
             }
             CleanupPolicy::KeepDays(days) => {
-                let cutoff = Utc::now().timestamp() - (days * 86400);
+                let cutoff = Utc::now().timestamp_millis() - (days * 86400 * 1000);
 
                 let query = "DELETE FROM langchain_rs_checkpoints WHERE created_at < $1";
 
