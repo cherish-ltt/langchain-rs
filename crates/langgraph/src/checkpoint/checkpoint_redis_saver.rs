@@ -188,7 +188,7 @@ impl RedisSaver {
                 .get("id")
                 .ok_or_else(|| CheckpointError::Storage("Missing id".to_owned()))?
                 .clone(),
-            parent_id: data.get("parent_id").cloned(),
+            parent_id: data.get("parent_id").cloned().filter(|s| !s.is_empty()),
             thread_id: data
                 .get("thread_id")
                 .ok_or_else(|| CheckpointError::Storage("Missing thread_id".to_owned()))?
@@ -273,7 +273,7 @@ impl RedisSaver {
                 .get("id")
                 .ok_or_else(|| CheckpointError::Storage("Missing id".to_owned()))?
                 .clone(),
-            parent_id: data.get("parent_id").cloned(),
+            parent_id: data.get("parent_id").cloned().filter(|s| !s.is_empty()),
             thread_id: data
                 .get("thread_id")
                 .ok_or_else(|| CheckpointError::Storage("Missing thread_id".to_owned()))?
@@ -575,12 +575,10 @@ where
         let thread_ids = if let Some(ref thread_id) = query.thread_id {
             vec![thread_id.clone()]
         } else {
-            // 获取所有线程 ID（这里需要一个全局的线程索引，或者扫描）
-            // 简化实现：如果有 thread_id 过滤，使用索引；否则返回空
-            return Ok(CheckpointListResult {
-                checkpoints: vec![],
-                total_count: 0,
-            });
+            let mut conn = self.conn.clone();
+            conn.smembers(self.all_threads_key()).await.map_err(|e| {
+                CheckpointError::Storage(format!("Failed to get all threads: {}", e))
+            })?
         };
 
         for thread_id in thread_ids {

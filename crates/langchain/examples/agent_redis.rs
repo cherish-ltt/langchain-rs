@@ -20,7 +20,7 @@ async fn main() {
     let api_key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     // 注意，运行此示例会在 database_url 的数据中创建名为 langchain_rs_checkpoint 的表，如果冲突则会失败
     let database_url = env::var("LANGCHAIN_RS_REDIS_DATABASE_URL")
-        .expect("LANGCHAIN_RS_POSTGRES_DATABASE_URL must be set");
+        .expect("LANGCHAIN_RS_REDIS_DATABASE_URL must be set");
 
     let model = ChatOpenAIBuilder::from_base(MODEL, BASE_URL, api_key.as_str()).build();
 
@@ -36,14 +36,14 @@ async fn main() {
         .build();
 
     let result = agent
-        .invoke(Message::user("我给你取名叫老大！"), Some("postgres001"))
+        .invoke(Message::user("我给你取名叫老大！"), Some("redis001"))
         .await
         .unwrap();
 
     println!("{}", result.last_message().unwrap().to_pretty());
 
     let result = agent
-        .invoke(Message::user("你叫什么名字？"), Some("postgres001"))
+        .invoke(Message::user("你叫什么名字？"), Some("redis001"))
         .await
         .unwrap();
 
