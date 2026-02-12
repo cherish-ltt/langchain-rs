@@ -440,7 +440,10 @@ impl RedisSaver {
 
                 pipeline.cmd("ZREM").arg(&timeline_key).arg(&metadata.id);
                 pipeline.cmd("ZREM").arg(&steps_key).arg(&metadata.id);
-                pipeline.cmd("SREM").arg(&thread_index_key).arg(&metadata.id);
+                pipeline
+                    .cmd("SREM")
+                    .arg(&thread_index_key)
+                    .arg(&metadata.id);
                 pipeline.cmd("DEL").arg(&parent_index_key);
             }
         }
@@ -459,12 +462,9 @@ impl RedisSaver {
 
             for thread_id in thread_ids {
                 let thread_index_key = self.thread_index_key(thread_id);
-                let remaining: i64 = conn
-                    .scard(&thread_index_key)
-                    .await
-                    .map_err(|e| {
-                        CheckpointError::Storage(format!("Failed to check thread size: {}", e))
-                    })?;
+                let remaining: i64 = conn.scard(&thread_index_key).await.map_err(|e| {
+                    CheckpointError::Storage(format!("Failed to check thread size: {}", e))
+                })?;
                 if remaining == 0 {
                     let all_threads_key = self.all_threads_key();
                     let _: () = conn.srem(all_threads_key, thread_id).await.map_err(|e| {
@@ -897,10 +897,11 @@ where
                     pipeline.cmd("HGETALL").arg(&checkpoint_key);
                 }
 
-                let results: Vec<HashMap<String, String>> = pipeline
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(|e| CheckpointError::Storage(format!("Pipeline failed: {}", e)))?;
+                let results: Vec<HashMap<String, String>> =
+                    pipeline
+                        .query_async(&mut conn)
+                        .await
+                        .map_err(|e| CheckpointError::Storage(format!("Pipeline failed: {}", e)))?;
 
                 // 解析元数据
                 let mut metadata_list: Vec<CheckpointMetadata> = Vec::new();
@@ -919,11 +920,10 @@ where
                     };
 
                     let tags_json = data.get("tags").cloned().unwrap_or_else(|| "{}".to_owned());
-                    let tags: HashMap<String, String> =
-                        match serde_json::from_str(&tags_json) {
-                            Ok(t) => t,
-                            Err(_) => continue,
-                        };
+                    let tags: HashMap<String, String> = match serde_json::from_str(&tags_json) {
+                        Ok(t) => t,
+                        Err(_) => continue,
+                    };
 
                     if let (Some(id), Some(thread_id), Some(created_at), Some(step)) = (
                         data.get("id"),
