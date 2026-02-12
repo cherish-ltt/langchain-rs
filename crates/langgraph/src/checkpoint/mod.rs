@@ -1,6 +1,7 @@
 mod checkpoint_instantiation;
 mod checkpoint_memory_saver;
 mod checkpoint_postgres_saver;
+mod checkpoint_redis_saver;
 mod checkpoint_sqlite_saver;
 mod checkpoint_trait;
 
@@ -24,6 +25,8 @@ pub mod checkpoint_struct_api {
     pub use super::checkpoint_memory_saver::*;
     #[cfg(feature = "postgres")]
     pub use super::checkpoint_postgres_saver::*;
+    #[cfg(feature = "redis")]
+    pub use super::checkpoint_redis_saver::*;
     #[cfg(feature = "sqlite")]
     pub use super::checkpoint_sqlite_saver::*;
     pub use super::checkpoint_trait::*;
