@@ -1,7 +1,11 @@
 mod checkpoint_instantiation;
+#[cfg(feature = "memory")]
 mod checkpoint_memory_saver;
+#[cfg(feature = "postgres")]
 mod checkpoint_postgres_saver;
+#[cfg(feature = "redis")]
 mod checkpoint_redis_saver;
+#[cfg(feature = "sqlite")]
 mod checkpoint_sqlite_saver;
 mod checkpoint_trait;
 
