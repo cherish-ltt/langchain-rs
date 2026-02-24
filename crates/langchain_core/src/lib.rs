@@ -13,8 +13,8 @@ pub mod state;
 pub mod store;
 
 pub use error::{
-    ErrorCategory, GraphError, LangChainError, ModelError, RetryConfig, ToolError,
-    ValidationError, retry_with_backoff,
+    ErrorCategory, GraphError, LangChainError, ModelError, RetryConfig, ToolError, ValidationError,
+    retry_with_backoff,
 };
 pub use parsers::{
     JsonParser, KeyValue, KeyValueParser, ListParser, OrParser, OutputParser, ParseError,

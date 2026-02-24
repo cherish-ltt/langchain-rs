@@ -557,7 +557,11 @@ mod tests {
 
     #[async_trait]
     impl Node<i32, i32, Infallible, ()> for AddOne {
-        async fn run_sync(&self, input: &i32, _context: NodeContext<'_>) -> Result<i32, Infallible> {
+        async fn run_sync(
+            &self,
+            input: &i32,
+            _context: NodeContext<'_>,
+        ) -> Result<i32, Infallible> {
             Ok(*input + 1)
         }
 
