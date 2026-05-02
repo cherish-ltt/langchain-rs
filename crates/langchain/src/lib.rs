@@ -3,7 +3,7 @@ pub mod node;
 use std::{collections::HashMap, error::Error, marker::PhantomData, sync::Arc};
 
 use futures::{Stream, StreamExt};
-use langchain_core::{ModelError, ToolError};
+use langchain_core::state::ToolCallError;
 use langchain_core::{
     message::Message,
     request::{FormatType, ResponseFormat, ToolSpec},
@@ -50,9 +50,7 @@ enum ReactAgentLabel {
 #[derive(Debug, Error)]
 pub enum AgentError {
     #[error("model error: {0}")]
-    Model(#[from] ModelError),
-    #[error("tool error: {0}")]
-    Tool(#[source] Box<dyn Error + Send + Sync>),
+    Model(#[source] Box<dyn Error + Send + Sync>),
     #[error("graph execution error: {0}")]
     Graph(String),
     #[error("agent error: {0}")]
@@ -73,12 +71,12 @@ impl From<GraphError<AgentError>> for AgentError {
 /// Unified React Agent Builder
 pub struct ReactAgentBuilder<M> {
     model: M,
-    tools: Vec<RegisteredTool<ToolError>>,
+    tools: Vec<RegisteredTool<ToolCallError>>,
     system_prompt: Option<String>,
     store: Option<Arc<dyn BaseStore>>,
     checkpointer: Option<Arc<dyn Checkpointer<MessagesState>>>,
     middlewares: SmallVec<[AgentMiddleware<MessagesState>; 4]>,
-    tool_middleware: Option<Arc<ToolMiddleware<ToolError>>>,
+    tool_middleware: Option<Arc<ToolMiddleware<ToolCallError>>>,
 }
 
 impl<M> ReactAgentBuilder<M>
@@ -97,7 +95,7 @@ where
         }
     }
 
-    pub fn with_tool_middleware(mut self, middleware: Arc<ToolMiddleware<ToolError>>) -> Self {
+    pub fn with_tool_middleware(mut self, middleware: Arc<ToolMiddleware<ToolCallError>>) -> Self {
         self.tool_middleware = Some(middleware);
         self
     }
@@ -109,13 +107,13 @@ where
 
     pub fn with_tools<I>(mut self, tools: I) -> Self
     where
-        I: IntoIterator<Item = RegisteredTool<ToolError>>,
+        I: IntoIterator<Item = RegisteredTool<ToolCallError>>,
     {
         self.tools = tools.into_iter().collect();
         self
     }
 
-    pub fn bind_tool(mut self, tool: RegisteredTool<ToolError>) -> Self {
+    pub fn bind_tool(mut self, tool: RegisteredTool<ToolCallError>) -> Self {
         self.tools.push(tool);
         self
     }
@@ -359,7 +357,7 @@ impl ReactAgent {
         ReactAgentBuilder::new(model)
     }
 
-    pub fn create_agent<M>(model: M, tools: Vec<RegisteredTool<ToolError>>) -> Self
+    pub fn create_agent<M>(model: M, tools: Vec<RegisteredTool<ToolCallError>>) -> Self
     where
         M: ChatModel + Send + Sync + 'static,
     {
@@ -456,7 +454,10 @@ impl ReactAgent {
         let content = state
             .last_assistant()
             .ok_or_else(|| AgentError::Agent("No assistant message in state".to_owned()))?
-            .content();
+            .content()
+            .ok_or_else(|| {
+                AgentError::StructuredOutput("No text content in assistant message".to_owned())
+            })?;
 
         let output: S = serde_json::from_str(content).map_err(|e| {
             AgentError::StructuredOutput(format!("Failed to parse structured output: {}", e))
@@ -563,7 +564,7 @@ where
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use langchain_core::state::{ChatCompletion, ChatStreamEvent};
+    use langchain_core::state::{ChatCompletion, ChatStream, ChatStreamEvent};
     use langchain_core::tool;
     use langchain_core::{
         message::{FunctionCall, Message, ToolCall},
@@ -576,16 +577,22 @@ mod tests {
         Json(#[from] serde_json::Error),
     }
 
+    #[derive(Debug, Error)]
+    #[error("test model error")]
+    struct TestModelError;
+
     #[derive(Debug)]
     struct TestModel;
 
     #[async_trait]
     impl ChatModel for TestModel {
+        type Error = TestModelError;
+
         async fn invoke(
             &self,
             _messages: &[std::sync::Arc<Message>],
             options: &langchain_core::state::InvokeOptions<'_>,
-        ) -> Result<ChatCompletion, langchain_core::error::ModelError> {
+        ) -> Result<ChatCompletion, TestModelError> {
             let tool_calls = if options.tools.is_some() {
                 let call = ToolCall {
                     id: "call1".to_owned(),
@@ -618,8 +625,7 @@ mod tests {
             &self,
             _messages: &[std::sync::Arc<Message>],
             _options: &langchain_core::state::InvokeOptions<'_>,
-        ) -> Result<langchain_core::state::StandardChatStream, langchain_core::error::ModelError>
-        {
+        ) -> Result<ChatStream<TestModelError>, TestModelError> {
             use async_stream::try_stream;
 
             let stream = try_stream! {

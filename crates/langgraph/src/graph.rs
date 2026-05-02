@@ -493,7 +493,7 @@ mod tests {
                 let target_node = branches.get(&branch_key).unwrap();
                 assert!(next_nodes.contains(&(branch_key, *target_node)));
 
-                let result = (condition)(&0);
+                let result = (condition)(&1);
                 let small_vec: SmallVec<[InternedGraphLabel; 2]> =
                     smallvec::smallvec![TestBranch::Default.intern()];
                 assert_eq!(result, small_vec);

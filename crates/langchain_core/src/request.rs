@@ -71,7 +71,7 @@ pub struct RequestBody {
     /// - OpenAI: 最多 4 个序列，API 将停止生成后续标记。返回的文本将不包含停止序列。
     /// - DeepSeek: 一个 string 或最多包含 16 个 string 的 list，在遇到这些词时，API 将停止生成更多的 token。
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop: Option<String>,
+    pub stop: Option<Vec<String>>,
 
     /// 频率惩罚参数，范围为-2.0到2.0，默认值为0.0
     /// 如果该值为正，那么新 token 会根据其在已有文本中的出现频率受到相应的惩罚，降低模型重复相同内容的可能性。

@@ -174,7 +174,7 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
         syn::ReturnType::Default => {
             let tool_err_ty = error_override
                 .clone()
-                .unwrap_or_else(|| parse_quote!(langchain_core::ToolError));
+                .unwrap_or_else(|| parse_quote!(langchain_core::state::ToolCallError));
             (
                 tool_err_ty,
                 quote! { Ok(#fn_name(#(#arg_pats),*).await) },
@@ -220,7 +220,7 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
                         extra_where_bounds,
                     )
                 } else {
-                    let tool_err_ty: syn::Type = parse_quote!(langchain_core::ToolError);
+                    let tool_err_ty: syn::Type = parse_quote!(langchain_core::state::ToolCallError);
                     let mut extra_where_bounds = Vec::new();
                     extra_where_bounds
                         .push(quote! { #err_ty: ::std::error::Error + Send + Sync + 'static });
@@ -229,7 +229,7 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
                         quote! {
                             #fn_name(#(#arg_pats),*)
                                 .await
-                                .map_err(langchain_core::ToolError::tool_call)
+                                .map_err(|e| langchain_core::state::ToolCallError(::std::boxed::Box::new(e)))
                         },
                         extra_where_bounds,
                     )
@@ -237,7 +237,7 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
             } else {
                 let tool_err_ty = error_override
                     .clone()
-                    .unwrap_or_else(|| parse_quote!(langchain_core::ToolError));
+                    .unwrap_or_else(|| parse_quote!(langchain_core::state::ToolCallError));
                 (
                     tool_err_ty,
                     quote! { Ok(#fn_name(#(#arg_pats),*).await) },

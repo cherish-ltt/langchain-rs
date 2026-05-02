@@ -29,14 +29,13 @@ pub trait GraphSpec {
 }
 
 /// StateGraph uses GraphSpec to define types
+#[allow(clippy::type_complexity)]
 pub struct StateGraph<Spec: GraphSpec> {
     pub graph: Graph<Spec::State, Spec::State, Spec::Update, Spec::Error, Spec::Event>,
     pub reducer: Reducer<Spec::State, Spec::Update>,
     pub entry: InternedGraphLabel,
     pub checkpointer: Option<Arc<dyn Checkpointer<Spec::State>>>,
     pub store: Option<Arc<dyn BaseStore>>,
-    pub interrupt_before: Vec<InternedGraphLabel>,
-    pub interrupt_after: Vec<InternedGraphLabel>,
 }
 
 /// 运行策略枚举
@@ -68,8 +67,6 @@ impl<Spec: GraphSpec> StateGraph<Spec> {
             entry: entry.intern(),
             checkpointer: None,
             store: None,
-            interrupt_before: Vec::new(),
-            interrupt_after: Vec::new(),
         }
     }
 
@@ -105,18 +102,6 @@ impl<Spec: GraphSpec> StateGraph<Spec> {
     /// 设置共享的 Store
     pub fn with_shared_store(mut self, store: Arc<dyn BaseStore>) -> Self {
         self.store = Some(store);
-        self
-    }
-
-    /// 设置需要在执行前中断的节点
-    pub fn with_interrupt_before(mut self, nodes: Vec<impl GraphLabel>) -> Self {
-        self.interrupt_before = nodes.into_iter().map(|n| n.intern()).collect();
-        self
-    }
-
-    /// 设置需要在执行后中断的节点
-    pub fn with_interrupt_after(mut self, nodes: Vec<impl GraphLabel>) -> Self {
-        self.interrupt_after = nodes.into_iter().map(|n| n.intern()).collect();
         self
     }
 
@@ -366,29 +351,6 @@ where
                     break;
                 }
 
-                // check interrupt_before
-                let should_interrupt = current_nodes.iter().any(|n| self.interrupt_before.contains(n));
-                if should_interrupt {
-                    tracing::info!("Interrupting before nodes: {:?}", current_nodes);
-                    if let Some(thread_id) = &config.thread_id && let Some(checkpointer) = checkpointer {
-                        let next_node_strs = current_nodes.iter().map(|n| n.as_str().to_owned()).collect();
-                        let parent_id = checkpointer
-                            .get_metadata_id_by_thread_id(thread_id)
-                            .await;
-                        let checkpoint = Checkpoint::new_auto_with_next_nodes(
-                            state.clone(),
-                            thread_id.clone(),
-                            step,
-                            next_node_strs,
-                            parent_id,
-                        );
-                        if let Err(e) = checkpointer.put(&checkpoint).await {
-                            tracing::error!("Failed to save checkpoint: {:?}", e);
-                        }
-                    }
-                    break;
-                }
-
                 // 1. 并行启动所有节点的流
                 // 我们需要同时消费多个流，这里稍微复杂一点
                 // 使用 futures::stream::select_all 来合并所有节点的事件流
@@ -443,11 +405,14 @@ where
                 // 3. 准备下一轮
                 // 重新计算 next_nodes
                 for node in &current_nodes {
-                    if let Ok(node_state) =
-                        graph.nodes.get(node).ok_or(GraphError::<Spec::Error>::InvalidNode(*node))
-                    {
-                        let next = graph.get_next_nodes(node_state, &state);
-                        all_next_nodes.extend(next);
+                    match graph.nodes.get(node) {
+                        Some(node_state) => {
+                            let next = graph.get_next_nodes(node_state, &state);
+                            all_next_nodes.extend(next);
+                        }
+                        None => {
+                            tracing::warn!("Node {:?} not found in graph during next_nodes computation", node);
+                        }
                     }
                 }
 
@@ -471,29 +436,6 @@ where
                             tracing::error!("Failed to save checkpoint: {:?}", e);
                         }
                     }
-
-                // check interrupt_after
-                let should_interrupt_after = current_nodes.iter().any(|n| self.interrupt_after.contains(n));
-                if should_interrupt_after {
-                    tracing::info!("Interrupting after nodes: {:?}", current_nodes);
-                    if let Some(thread_id) = &config.thread_id && let Some(checkpointer) = checkpointer {
-                        let next_node_strs = all_next_nodes.iter().map(|n| n.as_str().to_owned()).collect();
-                        let parent_id = checkpointer
-                            .get_metadata_id_by_thread_id(thread_id)
-                            .await;
-                        let checkpoint = Checkpoint::new_auto_with_next_nodes(
-                            state.clone(),
-                            thread_id.clone(),
-                            step,
-                            next_node_strs,
-                            parent_id,
-                        );
-                        if let Err(e) = checkpointer.put(&checkpoint).await {
-                            tracing::error!("Failed to save checkpoint: {:?}", e);
-                        }
-                    }
-                    break;
-                }
 
                 if all_next_nodes.is_empty() {
                     break;

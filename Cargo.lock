@@ -1122,22 +1122,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "langgraph-checkpoint-postgres"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "langgraph",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "langgraph_macro"
 version = "0.1.0"
 dependencies = [

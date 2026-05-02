@@ -96,7 +96,6 @@ impl PostgresSaver {
                 tags JSONB,
                 state_json JSONB NOT NULL,
                 next_nodes JSONB NOT NULL,
-                pending_interrupt JSONB,
                 size_bytes INTEGER NOT NULL DEFAULT 0,
                 updated_at BIGINT NOT NULL
             );"#,
@@ -217,22 +216,10 @@ impl PostgresSaver {
         let next_nodes = serde_json::from_value(next_nodes_jsonb).map_err(|e| {
             CheckpointError::Serialization(format!("Failed to deserialize next_nodes: {}", e))
         })?;
-        let pending_interrupt: Option<serde_json::Value> = row.try_get("pending_interrupt").ok();
-        let pending_interrupt = if let Some(val) = pending_interrupt {
-            Some(serde_json::from_value(val).map_err(|e| {
-                CheckpointError::Serialization(format!(
-                    "Failed to deserialize pending_interrupt: {}",
-                    e
-                ))
-            })?)
-        } else {
-            None
-        };
         Ok(Checkpoint {
             metadata,
             state,
             next_nodes,
-            pending_interrupt,
         })
     }
 
@@ -310,8 +297,31 @@ where
         }
     }
 
+    async fn get_latest_metadata(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CheckpointMetadata>, CheckpointError> {
+        let query = r#"
+            SELECT * FROM langchain_rs_checkpoints
+            WHERE thread_id = $1
+            ORDER BY id DESC
+            LIMIT 1
+        "#;
+
+        let row = sqlx::query(query)
+            .bind(thread_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| CheckpointError::Storage(format!("Query failed: {}", e)))?;
+
+        match row {
+            Some(r) => Ok(Some(Self::row_to_metadata(&r)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn put(&self, checkpoint: &Checkpoint<S>) -> Result<(), CheckpointError> {
-        let now = Utc::now().timestamp();
+        let now = Utc::now().timestamp_millis();
         let size_bytes = Self::calculate_size(checkpoint)?;
 
         let state_json: serde_json::Value = serde_json::to_value(&checkpoint.state)
@@ -320,18 +330,14 @@ where
             .map_err(|e| CheckpointError::Serialization(e.to_string()))?;
         let tags: serde_json::Value = serde_json::to_value(&checkpoint.metadata.tags)
             .map_err(|e| CheckpointError::Serialization(e.to_string()))?;
-        let pending_interrupt: Option<serde_json::Value> = checkpoint
-            .pending_interrupt
-            .as_ref()
-            .and_then(|interrupt| serde_json::to_value(interrupt).ok());
         let checkpoint_type_str =
             Self::checkpoint_type_to_string(&checkpoint.metadata.checkpoint_type);
 
         let query = r#"
             INSERT INTO langchain_rs_checkpoints (
                 id, parent_id, thread_id, created_at, step, checkpoint_type,
-                tags, state_json, next_nodes, pending_interrupt, size_bytes, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                tags, state_json, next_nodes, size_bytes, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT(id) DO UPDATE SET
                 parent_id = EXCLUDED.parent_id,
                 thread_id = EXCLUDED.thread_id,
@@ -341,7 +347,6 @@ where
                 tags = EXCLUDED.tags,
                 state_json = EXCLUDED.state_json,
                 next_nodes = EXCLUDED.next_nodes,
-                pending_interrupt = EXCLUDED.pending_interrupt,
                 size_bytes = EXCLUDED.size_bytes,
                 updated_at = EXCLUDED.updated_at
         "#;
@@ -356,7 +361,6 @@ where
             .bind(tags)
             .bind(state_json)
             .bind(next_nodes)
-            .bind(pending_interrupt)
             .bind(size_bytes as i64)
             .bind(now)
             .execute(&self.pool)
@@ -420,64 +424,62 @@ where
         &self,
         query: CheckpointQuery,
     ) -> Result<CheckpointListResult, CheckpointError> {
-        let mut sql = "SELECT * FROM langchain_rs_checkpoints WHERE 1=1".to_owned();
-        let mut bind_index = 1;
+        let mut where_sql = String::new();
+        let mut params: Vec<String> = Vec::new();
 
-        if query.thread_id.is_some() {
-            sql.push_str(&format!(" AND thread_id = ${}", bind_index));
-            bind_index += 1;
+        if let Some(ref thread_id) = query.thread_id {
+            where_sql.push_str(&format!(" AND thread_id = ${}", params.len() + 1));
+            params.push(thread_id.clone());
         }
-
-        if query.start_time.is_some() {
-            sql.push_str(&format!(" AND created_at >= ${}", bind_index));
-            bind_index += 1;
+        if let Some(start) = query.start_time {
+            where_sql.push_str(&format!(" AND created_at >= ${}", params.len() + 1));
+            params.push(start.to_string());
         }
-
-        if query.end_time.is_some() {
-            sql.push_str(&format!(" AND created_at <= ${}", bind_index));
-            bind_index += 1;
+        if let Some(end) = query.end_time {
+            where_sql.push_str(&format!(" AND created_at <= ${}", params.len() + 1));
+            params.push(end.to_string());
         }
-
-        if query.checkpoint_type.is_some() {
-            sql.push_str(&format!(" AND checkpoint_type = ${}", bind_index));
-            bind_index += 1;
+        if let Some(ref cp_type) = query.checkpoint_type {
+            where_sql.push_str(&format!(" AND checkpoint_type = ${}", params.len() + 1));
+            params.push(Self::checkpoint_type_to_string(cp_type).to_owned());
         }
-
         if let Some(ref tags) = query.tags
             && !tags.is_empty()
         {
-            sql.push_str(&format!(" AND tags @> ${}", bind_index));
+            where_sql.push_str(&format!(" AND tags @> ${}", params.len() + 1));
         }
 
+        let count_sql = format!(
+            "SELECT COUNT(*) as count FROM langchain_rs_checkpoints WHERE 1=1{}",
+            where_sql
+        );
+        let mut count_q = sqlx::query(&count_sql);
+        for p in &params {
+            count_q = count_q.bind(p);
+        }
+        let count_row = count_q
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| CheckpointError::Storage(format!("Count query failed: {}", e)))?;
+        let total_count: i64 = count_row
+            .try_get("count")
+            .map_err(|e| CheckpointError::Storage(format!("Failed to get count: {}", e)))?;
+
+        let mut sql = format!(
+            "SELECT * FROM langchain_rs_checkpoints WHERE 1=1{}",
+            where_sql
+        );
         match query.order {
             CheckpointOrder::Desc => sql.push_str(" ORDER BY created_at DESC"),
             CheckpointOrder::Asc => sql.push_str(" ORDER BY created_at ASC"),
         }
-
         if let Some(limit) = query.limit {
             sql.push_str(&format!(" LIMIT {}", limit));
         }
 
         let mut q = sqlx::query(&sql);
-
-        if let Some(ref thread_id) = query.thread_id {
-            q = q.bind(thread_id);
-        }
-        if let Some(start) = query.start_time {
-            q = q.bind(start);
-        }
-        if let Some(end) = query.end_time {
-            q = q.bind(end);
-        }
-        if let Some(ref cp_type) = query.checkpoint_type {
-            q = q.bind(Self::checkpoint_type_to_string(cp_type));
-        }
-        if let Some(ref tags) = query.tags
-            && !tags.is_empty()
-        {
-            let tags_json = serde_json::to_value(tags)
-                .map_err(|e| CheckpointError::Serialization(e.to_string()))?;
-            q = q.bind(tags_json);
+        for p in &params {
+            q = q.bind(p);
         }
 
         let rows = q
@@ -489,7 +491,7 @@ where
         let checkpoints = checkpoints?;
 
         Ok(CheckpointListResult {
-            total_count: checkpoints.len(),
+            total_count: total_count as usize,
             checkpoints,
         })
     }

@@ -3,8 +3,8 @@ use langchain_core::{message::Message, tool};
 use langchain_openai::ChatOpenAIBuilder;
 use std::env;
 
-const BASE_URL: &str = "https://api.siliconflow.cn/v1";
-const MODEL: &str = "deepseek-ai/DeepSeek-V3.2";
+const BASE_URL: &str = "https://api.deepseek.com";
+const MODEL: &str = "deepseek-v4-flash";
 
 #[tool(
     description = "add two numbers",

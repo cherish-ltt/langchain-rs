@@ -101,7 +101,6 @@ impl SqliteSaver {
                 tags TEXT,
                 state_json TEXT NOT NULL,
                 next_nodes TEXT NOT NULL,
-                pending_interrupt TEXT,
                 size_bytes INTEGER NOT NULL DEFAULT 0,
                 updated_at BIGINT NOT NULL
             );
@@ -222,26 +221,10 @@ impl SqliteSaver {
         let next_nodes = serde_json::from_str(&next_nodes_json).map_err(|e| {
             CheckpointError::Serialization(format!("Failed to deserialize next_nodes: {}", e))
         })?;
-        let pending_interrupt_json: Option<String> = row.try_get("pending_interrupt").ok();
-        let pending_interrupt = if let Some(json) = pending_interrupt_json {
-            if json.eq("null") {
-                None
-            } else {
-                Some(serde_json::from_str(&json).map_err(|e| {
-                    CheckpointError::Serialization(format!(
-                        "Failed to deserialize pending_interrupt: {}",
-                        e
-                    ))
-                })?)
-            }
-        } else {
-            None
-        };
         Ok(Checkpoint {
             metadata,
             state,
             next_nodes,
-            pending_interrupt,
         })
     }
 
@@ -303,6 +286,29 @@ where
         }
     }
 
+    async fn get_latest_metadata(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CheckpointMetadata>, CheckpointError> {
+        let query = r#"
+            SELECT * FROM langchain_rs_checkpoints
+            WHERE thread_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+        "#;
+
+        let row = sqlx::query(query)
+            .bind(thread_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| CheckpointError::Storage(format!("Query failed: {}", e)))?;
+
+        match row {
+            Some(r) => Ok(Some(Self::row_to_metadata(&r)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn put(&self, checkpoint: &Checkpoint<S>) -> Result<(), CheckpointError> {
         let now = Utc::now().timestamp_millis();
         let size_bytes = Self::calculate_size(checkpoint)?;
@@ -313,16 +319,14 @@ where
             .map_err(|e| CheckpointError::Serialization(e.to_string()))?;
         let tags_json = serde_json::to_string(&checkpoint.metadata.tags)
             .map_err(|e| CheckpointError::Serialization(e.to_string()))?;
-        let pending_interrupt_json = serde_json::to_string(&checkpoint.pending_interrupt)
-            .unwrap_or_else(|_| "null".to_owned());
         let checkpoint_type_str =
             Self::checkpoint_type_to_string(&checkpoint.metadata.checkpoint_type);
 
         let query = r#"
             INSERT INTO langchain_rs_checkpoints (
                 id, parent_id, thread_id, created_at, step, checkpoint_type,
-                tags, state_json, next_nodes, pending_interrupt, size_bytes, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tags, state_json, next_nodes, size_bytes, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 parent_id = excluded.parent_id,
                 thread_id = excluded.thread_id,
@@ -332,7 +336,6 @@ where
                 tags = excluded.tags,
                 state_json = excluded.state_json,
                 next_nodes = excluded.next_nodes,
-                pending_interrupt = excluded.pending_interrupt,
                 size_bytes = excluded.size_bytes,
                 updated_at = excluded.updated_at
         "#;
@@ -353,7 +356,6 @@ where
                 String::from_utf8(next_nodes_json)
                     .map_err(|e| CheckpointError::Serialization(e.to_string()))?,
             )
-            .bind(pending_interrupt_json)
             .bind(size_bytes as i64)
             .bind(now)
             .execute(&self.pool)
@@ -417,48 +419,35 @@ where
         &self,
         query: CheckpointQuery,
     ) -> Result<CheckpointListResult, CheckpointError> {
-        let mut sql = "SELECT * FROM langchain_rs_checkpoints WHERE 1=1".to_owned();
+        let mut where_sql = String::new();
         let mut params: Vec<String> = Vec::new();
-        let param_index = &mut 0;
 
-        // thread_id 过滤
         if let Some(ref thread_id) = query.thread_id {
-            sql.push_str(&format!(" AND thread_id = ?{}", param_index));
+            where_sql.push_str(" AND thread_id = ?");
             params.push(thread_id.clone());
-            *param_index += 1;
         }
-
-        // start_time 过滤
         if let Some(start) = query.start_time {
-            sql.push_str(&format!(" AND created_at >= ?{}", param_index));
+            where_sql.push_str(" AND created_at >= ?");
             params.push(start.to_string());
-            *param_index += 1;
         }
-
-        // end_time 过滤
         if let Some(end) = query.end_time {
-            sql.push_str(&format!(" AND created_at <= ?{}", param_index));
+            where_sql.push_str(" AND created_at <= ?");
             params.push(end.to_string());
-            *param_index += 1;
         }
-
-        // checkpoint_type 过滤
         if let Some(ref cp_type) = query.checkpoint_type {
-            sql.push_str(&format!(" AND checkpoint_type = ?{}", param_index));
+            where_sql.push_str(" AND checkpoint_type = ?");
             params.push(Self::checkpoint_type_to_string(cp_type).to_owned());
-            *param_index += 1;
         }
 
-        // 排序
-        match query.order {
-            CheckpointOrder::Desc => sql.push_str(" ORDER BY created_at DESC"),
-            CheckpointOrder::Asc => sql.push_str(" ORDER BY created_at ASC"),
+        let count_sql = format!(
+            "SELECT COUNT(*) as count FROM langchain_rs_checkpoints WHERE 1=1{}",
+            where_sql
+        );
+        let mut count_q = sqlx::query(&count_sql);
+        for p in &params {
+            count_q = count_q.bind(p.as_str());
         }
-
-        // 限制数量
-        let total_sql = format!("SELECT COUNT(*) as count FROM ({}) as subq", sql);
-        let count_row = sqlx::query(&total_sql)
-            // .bind_all(params.iter().map(|s| s.as_str()))
+        let count_row = count_q
             .fetch_one(&self.pool)
             .await
             .map_err(|e| CheckpointError::Storage(format!("Count query failed: {}", e)))?;
@@ -466,7 +455,14 @@ where
             .try_get("count")
             .map_err(|e| CheckpointError::Storage(format!("Failed to get count: {}", e)))?;
 
-        // 获取结果
+        let mut sql = format!(
+            "SELECT * FROM langchain_rs_checkpoints WHERE 1=1{}",
+            where_sql
+        );
+        match query.order {
+            CheckpointOrder::Desc => sql.push_str(" ORDER BY created_at DESC"),
+            CheckpointOrder::Asc => sql.push_str(" ORDER BY created_at ASC"),
+        }
         if let Some(limit) = query.limit {
             sql.push_str(&format!(" LIMIT {}", limit));
         }
@@ -1264,7 +1260,6 @@ mod tests {
                 tags TEXT,
                 state_json TEXT NOT NULL,
                 next_nodes TEXT NOT NULL,
-                pending_interrupt TEXT,
                 size_bytes INTEGER NOT NULL DEFAULT 0,
                 updated_at BIGINT NOT NULL
             );
@@ -1305,7 +1300,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "search 方法有 SQL 占位符 bug"]
     async fn test_search_empty_result() {
         let saver = setup_test_saver().await;
 

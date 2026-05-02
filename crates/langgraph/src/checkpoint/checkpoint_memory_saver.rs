@@ -38,6 +38,31 @@ impl Default for MemorySaver {
     }
 }
 
+impl MemorySaver {
+    async fn delete_checkpoints_by_ids(
+        &self,
+        ids: &[CheckpointId],
+    ) -> Result<usize, CheckpointError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut storage = self.storage.write().await;
+        let mut index = self.metadata_index.write().await;
+
+        for checkpoint_id in ids {
+            for (_, checkpoints) in storage.iter_mut() {
+                checkpoints.remove(checkpoint_id);
+            }
+            for (_, metadatas) in index.iter_mut() {
+                metadatas.retain(|m| &m.id != checkpoint_id);
+            }
+        }
+
+        Ok(ids.len())
+    }
+}
+
 #[async_trait]
 impl<S> Checkpointer<S> for MemorySaver
 where
@@ -58,6 +83,14 @@ where
             }
         }
         Ok(None)
+    }
+
+    async fn get_latest_metadata(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CheckpointMetadata>, CheckpointError> {
+        let index = self.metadata_index.read().await;
+        Ok(index.get(thread_id).and_then(|v| v.last()).cloned())
     }
 
     async fn put(&self, checkpoint: &Checkpoint<S>) -> Result<(), CheckpointError> {
@@ -94,18 +127,9 @@ where
     }
 
     async fn delete_checkpoint(&self, checkpoint_id: &CheckpointId) -> Result<(), CheckpointError> {
-        let mut storage = self.storage.write().await;
-        let mut index = self.metadata_index.write().await;
-
-        // 遍历所有线程查找并删除
-        for (_, checkpoints) in storage.iter_mut() {
-            checkpoints.remove(checkpoint_id);
-        }
-
-        for (_, metadatas) in index.iter_mut() {
-            metadatas.retain(|m| &m.id != checkpoint_id);
-        }
-
+        let _ = self
+            .delete_checkpoints_by_ids(std::slice::from_ref(checkpoint_id))
+            .await?;
         Ok(())
     }
 
@@ -301,52 +325,36 @@ where
     async fn cleanup(&self, policy: &CleanupPolicy) -> Result<usize, CheckpointError> {
         let index = self.metadata_index.read().await;
 
-        let mut to_delete = Vec::new();
-
-        match policy {
+        let to_delete = match policy {
             CleanupPolicy::KeepLast(n) => {
+                let mut ids = Vec::new();
                 for (_, metadatas) in index.iter() {
                     let len = metadatas.len();
                     if len > *n {
-                        // 保留最后 n 个，删除前面的
                         for metadata in metadatas.iter().take(len - n) {
-                            to_delete.push(metadata.id.clone());
+                            ids.push(metadata.id.clone());
                         }
                     }
                 }
+                ids
             }
             CleanupPolicy::KeepDays(days) => {
                 let cutoff = (Utc::now() - chrono::Duration::days(*days)).timestamp_millis();
+                let mut ids = Vec::new();
                 for (_, metadatas) in index.iter() {
                     for metadata in metadatas.iter() {
                         if metadata.created_at < cutoff {
-                            to_delete.push(metadata.id.clone());
+                            ids.push(metadata.id.clone());
                         }
                     }
                 }
+                ids
             }
-            // CleanupPolicy::Custom(predicate) => {
-            //     for (_, metadatas) in index.iter() {
-            //         for metadata in metadatas.iter() {
-            //             if predicate(metadata) {
-            //                 to_delete.push(metadata.id.clone());
-            //             }
-            //         }
-            //     }
-            // }
-            _ => {}
-        }
+            _ => Vec::new(),
+        };
 
-        // 释放锁后再删除
         drop(index);
-
-        let count = 0;
-        // for checkpoint_id in to_delete {
-        //     self.delete_checkpoint(&checkpoint_id).await?;
-        //     count += 1;
-        // }
-
-        Ok(count)
+        self.delete_checkpoints_by_ids(&to_delete).await
     }
 
     async fn stats(&self, thread_id: Option<&str>) -> Result<CheckpointStats, CheckpointError> {
@@ -418,7 +426,6 @@ mod tests {
             },
             state: 42,
             next_nodes: smallvec!["Tool".to_owned()],
-            pending_interrupt: None,
         };
 
         // 保存
@@ -451,7 +458,6 @@ mod tests {
             },
             state: 42,
             next_nodes: smallvec!["Tool".to_owned()],
-            pending_interrupt: None,
         };
 
         // 创建子检查点
@@ -468,7 +474,6 @@ mod tests {
             },
             state: 43,
             next_nodes: smallvec!["Tool".to_owned()],
-            pending_interrupt: None,
         };
 
         // 保存

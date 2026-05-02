@@ -52,13 +52,19 @@ pub trait Checkpointer<S>: Send + Sync {
         checkpoint_id: &CheckpointId,
     ) -> Result<Option<String>, CheckpointError>;
 
+    /// 获取指定线程的最新检查点元数据（不反序列化完整状态）
+    async fn get_latest_metadata(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CheckpointMetadata>, CheckpointError>;
+
     // 获取指定检查点的元数据的 id
     async fn get_metadata_id_by_thread_id(&self, thread_id: &str) -> Option<String> {
-        self.get(thread_id)
+        self.get_latest_metadata(thread_id)
             .await
             .ok()
             .flatten()
-            .map(|checkpoint| checkpoint.metadata.id)
+            .map(|metadata| metadata.id)
     }
 
     // 获取指定检查点的元数据的 parent_id

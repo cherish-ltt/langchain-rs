@@ -5,7 +5,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::{
-    error::ModelError,
     message::{Message, ToolCall},
     request::{ResponseFormat, ToolSpec},
     response::Usage,
@@ -15,7 +14,7 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct InvokeOptions<'a> {
     /// 可用工具列表
-    pub tools: Option<&'a [ToolSpec]>,
+    pub tools: Option<Arc<[ToolSpec]>>,
     /// 采样温度
     pub temperature: Option<f32>,
     /// 最大生成 token 数
@@ -136,21 +135,19 @@ pub enum ChatStreamEvent {
 
 pub type ChatStream<E> = Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, E>> + Send>>;
 
-/// 标准的 ChatStream，使用 Box<dyn Error>
-pub type StandardChatStream =
-    Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, ModelError>> + Send>>;
-
 #[async_trait]
 pub trait ChatModel: Send + Sync {
+    type Error: std::error::Error + Send + Sync + 'static;
+
     async fn invoke(
         &self,
         messages: &[Arc<Message>],
         options: &InvokeOptions<'_>,
-    ) -> Result<ChatCompletion, ModelError>;
+    ) -> Result<ChatCompletion, Self::Error>;
 
     async fn stream(
         &self,
         messages: &[Arc<Message>],
         options: &InvokeOptions<'_>,
-    ) -> Result<StandardChatStream, ModelError>;
+    ) -> Result<ChatStream<Self::Error>, Self::Error>;
 }

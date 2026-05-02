@@ -1,7 +1,4 @@
-use crate::{
-    checkpoint::{CheckpointId, CheckpointType},
-    interrupt::Interrupt,
-};
+use crate::checkpoint::{CheckpointId, CheckpointType};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
@@ -64,8 +61,6 @@ pub struct Checkpoint<S> {
     /// 下一步需要执行的节点 ID 列表
     /// 由于 InternedGraphLabel 无法直接序列化，这里存储字符串形式的 Label
     pub next_nodes: SmallVec<[String; 4]>,
-    /// 待处理的中断（如果有）
-    pub pending_interrupt: Option<Interrupt>,
 }
 
 impl<S> Checkpoint<S> {
@@ -74,7 +69,6 @@ impl<S> Checkpoint<S> {
         Checkpoint {
             state,
             next_nodes: smallvec![],
-            pending_interrupt: None,
             metadata: CheckpointMetadata::new_final(thread_id.clone(), step, parent_id),
         }
     }
@@ -91,7 +85,6 @@ impl<S> Checkpoint<S> {
         Checkpoint {
             state,
             next_nodes,
-            pending_interrupt: None,
             metadata: CheckpointMetadata::new_auto(thread_id.clone(), step, parent_id),
         }
     }
@@ -101,7 +94,6 @@ impl<S> Checkpoint<S> {
         Checkpoint {
             state,
             next_nodes: smallvec![],
-            pending_interrupt: None,
             metadata: CheckpointMetadata::new_auto(thread_id.clone(), step, parent_id),
         }
     }

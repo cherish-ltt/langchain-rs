@@ -222,25 +222,10 @@ impl RedisSaver {
             CheckpointError::Serialization(format!("Failed to deserialize next_nodes: {}", e))
         })?;
 
-        let pending_interrupt = if let Some(interrupt_json) = data.get("pending_interrupt")
-            && !interrupt_json.is_empty()
-            && !interrupt_json.eq("null")
-        {
-            Some(serde_json::from_str(interrupt_json).map_err(|e| {
-                CheckpointError::Serialization(format!(
-                    "Failed to deserialize pending_interrupt: {}",
-                    e
-                ))
-            })?)
-        } else {
-            None
-        };
-
         Ok(Some(Checkpoint {
             metadata,
             state,
             next_nodes,
-            pending_interrupt,
         }))
     }
 
@@ -506,6 +491,28 @@ where
         }
     }
 
+    async fn get_latest_metadata(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CheckpointMetadata>, CheckpointError> {
+        let mut conn = self.conn.clone();
+        let timeline_key = self.timeline_key(thread_id);
+
+        let checkpoints: Vec<String> = conn.zrevrange(timeline_key, 0, 0).await.map_err(|e| {
+            CheckpointError::Storage(format!("Failed to get latest checkpoint: {}", e))
+        })?;
+
+        let latest_id: Option<String> = checkpoints.into_iter().next();
+
+        match latest_id {
+            Some(id) => {
+                let checkpoint_key = self.checkpoint_key(&id);
+                self.get_metadata_from_hash(&checkpoint_key).await
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn put(&self, checkpoint: &Checkpoint<S>) -> Result<(), CheckpointError> {
         let mut conn = self.conn.clone();
         let checkpoint_key = self.checkpoint_key(&checkpoint.metadata.id);
@@ -519,8 +526,6 @@ where
             .map_err(|e| CheckpointError::Serialization(e.to_string()))?;
         let tags_json = serde_json::to_string(&checkpoint.metadata.tags)
             .map_err(|e| CheckpointError::Serialization(e.to_string()))?;
-        let pending_interrupt_json = serde_json::to_string(&checkpoint.pending_interrupt)
-            .unwrap_or_else(|_| "null".to_owned());
         let checkpoint_type_str =
             Self::checkpoint_type_to_string(&checkpoint.metadata.checkpoint_type);
 
@@ -538,7 +543,6 @@ where
             ("tags", tags_json),
             ("state_json", state_json),
             ("next_nodes", next_nodes_json),
-            ("pending_interrupt", pending_interrupt_json),
             ("size_bytes", size_bytes.to_string()),
             ("updated_at", now.to_string()),
         ];

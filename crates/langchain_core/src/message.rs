@@ -177,16 +177,16 @@ impl Message {
     }
 
     /// 获取消息内容的文本形式
-    pub fn content(&self) -> &str {
+    pub fn content(&self) -> Option<&str> {
         match self {
             Message::User { content, .. } => match content {
-                Content::Text(s) => s,
-                _ => "",
+                Content::Text(s) => Some(s),
+                _ => None,
             },
-            Message::Assistant { content, .. } => content,
-            Message::System { content, .. } => content,
-            Message::Developer { content, .. } => content,
-            Message::Tool { content, .. } => content,
+            Message::Assistant { content, .. } => Some(content),
+            Message::System { content, .. } => Some(content),
+            Message::Developer { content, .. } => Some(content),
+            Message::Tool { content, .. } => Some(content),
         }
     }
 

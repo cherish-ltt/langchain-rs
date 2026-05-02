@@ -1,4 +1,5 @@
 use std::mem;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -16,7 +17,7 @@ where
     M: ChatModel + 'static,
 {
     pub model: M,
-    pub tools: Vec<ToolSpec>,
+    pub tools: Arc<[ToolSpec]>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
 }
@@ -28,7 +29,7 @@ where
     pub fn new(model: M, tools: Vec<ToolSpec>) -> Self {
         Self {
             model,
-            tools,
+            tools: tools.into(),
             temperature: None,
             max_tokens: None,
         }
@@ -60,7 +61,7 @@ where
             tools: if self.tools.is_empty() {
                 None
             } else {
-                Some(&self.tools)
+                Some(self.tools.clone())
             },
             temperature: self.temperature,
             max_tokens: self.max_tokens,
@@ -71,7 +72,7 @@ where
             .model
             .invoke(&messages, &options)
             .await
-            .map_err(AgentError::Model)?;
+            .map_err(|e| AgentError::Model(Box::new(e)))?;
         tracing::debug!("LLM completion: {:?}", completion);
 
         let mut delta = MessagesState::default();
@@ -92,7 +93,7 @@ where
             tools: if self.tools.is_empty() {
                 None
             } else {
-                Some(&self.tools)
+                Some(self.tools.clone())
             },
             temperature: self.temperature,
             max_tokens: self.max_tokens,
@@ -103,7 +104,7 @@ where
             .model
             .stream(&messages, &options)
             .await
-            .map_err(AgentError::Model)?;
+            .map_err(|e| AgentError::Model(Box::new(e)))?;
 
         let mut content = String::new();
         let mut reasoning_content = String::new();
@@ -112,7 +113,7 @@ where
         let mut raw_args = String::new();
 
         while let Some(event) = completion_stream.next().await {
-            let event = event.map_err(AgentError::Model)?;
+            let event = event.map_err(|e| AgentError::Model(Box::new(e)))?;
             sink.emit(event.clone()).await;
 
             match event {

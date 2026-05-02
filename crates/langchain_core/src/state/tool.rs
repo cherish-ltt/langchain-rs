@@ -1,6 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use std::error::Error;
+use std::fmt;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use crate::request::ToolFunction;
@@ -8,6 +10,28 @@ use crate::request::ToolFunction;
 pub type ToolFuture<E> = Pin<Box<dyn Future<Output = Result<Value, E>> + Send>>;
 
 pub type ToolFn<E> = dyn Fn(Value) -> ToolFuture<E> + Send + Sync;
+
+/// 工具调用错误（用于 #[tool] 宏默认错误类型）
+#[derive(Debug)]
+pub struct ToolCallError(pub Box<dyn Error + Send + Sync>);
+
+impl fmt::Display for ToolCallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "tool call error: {}", self.0)
+    }
+}
+
+impl Error for ToolCallError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+impl From<serde_json::Error> for ToolCallError {
+    fn from(e: serde_json::Error) -> Self {
+        Self(Box::new(e))
+    }
+}
 
 pub struct RegisteredTool<E> {
     pub function: ToolFunction,
@@ -317,7 +341,7 @@ mod tests {
 
     #[test]
     fn tool_attribute_builds_registered_tool() {
-        let tool: RegisteredTool<langchain_core::ToolError> = add_attr_tool();
+        let tool: RegisteredTool<ToolCallError> = add_attr_tool();
         assert_eq!(tool.function.name, "add_attr");
         if let Value::Object(map) = &tool.function.parameters {
             assert!(map.get("type").is_some());
@@ -338,7 +362,7 @@ mod tests {
 
     #[test]
     fn tool_attribute_supports_infallible_return() {
-        let tool: RegisteredTool<langchain_core::ToolError> = add_attr_infallible_tool();
+        let tool: RegisteredTool<ToolCallError> = add_attr_infallible_tool();
         assert_eq!(tool.function.name, "add_attr_infallible");
         if let Value::Object(map) = &tool.function.parameters {
             assert!(map.get("type").is_some());
