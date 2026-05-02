@@ -469,8 +469,8 @@ mod tests {
         branches.insert(TestBranch::Default.intern(), TestLabel::B.intern());
 
         graph
-            .try_add_node_condition_edge(TestLabel::A, branches.clone(), |output: &i32| {
-                if *output > 0 {
+            .try_add_node_condition_edge(TestLabel::A, branches.clone(), |state: &i32| {
+                if *state > 0 {
                     smallvec::smallvec![TestBranch::Default.intern()]
                 } else {
                     smallvec::smallvec![]
